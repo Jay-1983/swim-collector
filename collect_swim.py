@@ -1142,18 +1142,34 @@ def sea_temperature(sites, feed, previous=None):
         when = parse_iso(previous["seaAt"])
         age = hours_since(when)
         if age is not None and 0 <= age * 60 < SEA_MAX_AGE_MIN and previous.get("sea"):
-            # THE SAME COVERAGE BAR A FRESH FETCH HAS TO CLEAR. Rainfall's
-            # carry-forward re-applies one and says why — "carrying forward must
-            # not launder a partial set into a healthy one" — and this one set
-            # ok unconditionally, so a short set published once was carried
-            # forward as healthy every twelve hours until a fresh read replaced
-            # it. Coastal sites only, because those are the only ones asked.
-            want = len(keys)
-            enough = len(previous["sea"]) >= want * 0.95 if want else True
-            feed.ok, feed.count, feed.at = enough, len(previous["sea"]), when
+            # CARRY THE HEALTH OF THE FETCH, DO NOT RE-DERIVE IT.
+            #
+            # The point of a bar here is real: "carrying forward must not
+            # launder a partial set into a healthy one". But re-deriving it as
+            # 95% of every sea-kind cell was a bar the data can never clear.
+            # The marine model does not answer everywhere we ask — 5 cells are
+            # over 20km from the nearest sea point and are dropped outright,
+            # and more are estuary and lake points that come back all-null,
+            # which is the RIGHT answer and is published as nothing. A fresh
+            # fetch on 7 September got 298 of 322 cells and reported healthy;
+            # the identical set on carry-forward reported the feed down. Same
+            # data, two verdicts, and the site said "Sea temperature" was down
+            # all day while it was working perfectly.
+            #
+            # So the fetch records whether it was healthy, and the carry-forward
+            # repeats that. A partial set stays partial for as long as it is
+            # carried, which is what the bar was for; the model's own permanent
+            # coverage is not a fault and no longer reads as one.
+            was_ok = previous.get("seaOk")
+            if was_ok is None:
+                # An older snapshot, written before the fetch recorded this.
+                # Fall back to the shape of the set rather than to a guess.
+                want = len(keys)
+                was_ok = len(previous["sea"]) >= want * 0.85 if want else True
+            feed.ok, feed.count, feed.at = bool(was_ok), len(previous["sea"]), when
             note = "carried forward, %d minutes old" % int(age * 60)
-            feed.partial = note if enough else (
-                note + ", and %d of %d sea cells" % (len(previous["sea"]), want))
+            feed.partial = note if was_ok else (
+                note + ", and the fetch it came from was partial")
             return previous["sea"], when
 
     batches = [keys[i:i + S.OPEN_METEO_BATCH]
@@ -1248,11 +1264,12 @@ def sea_temperature(sites, feed, previous=None):
     if failed:
         feed.partial = "%d of %d cells" % (len(got), len(keys))
     if snapped:
-        print("    %-32s %4d cells dropped: nearest sea cell over %.0fkm away"
-              % ("", snapped, SEA_MAX_SNAP_KM))
+        print("    %-32s %4d %s dropped: nearest sea cell over %.0fkm away"
+              % ("", snapped, "cell" if snapped == 1 else "cells", SEA_MAX_SNAP_KM))
     if corrected:
-        print("    %-32s %4d cells had their tide shifted onto a gauge"
-              % ("", corrected))
+        print("    %-32s %4d %s" % ("", corrected,
+              "cell had its tide shifted onto a gauge" if corrected == 1
+              else "cells had their tide shifted onto a gauge"))
     return got, NOW
 
 
@@ -1957,6 +1974,7 @@ def previous_week():
     try:
         d = fetch_json(url + ("&" if "?" in url else "?") + "week=1", tries=1, timeout=20)
         return {"seaAt": d.get("seaAt"), "sea": d.get("sea") or {},
+                "seaOk": d.get("seaOk"),
                 "stations": d.get("stations") or {},
                 "days": d.get("days") or [], "cells": d.get("cells") or {}}
     except Exception:                               # noqa: BLE001
@@ -2361,6 +2379,13 @@ def main():
             "seaGrid": SEA_GRID,
             "seaAt": sea_stamp,
             "sea": sea_now,
+            # WHETHER THE FETCH THAT PRODUCED THIS WAS HEALTHY, published with
+            # the data so the next twelve hours of carry-forward can repeat it
+            # instead of re-deriving it from a denominator the marine model
+            # never fills. Carried through unchanged when the sea itself is
+            # carried, so a partial set stays partial.
+            "seaOk": (bool(feeds["Sea temperature"].ok) if sea
+                      else prev.get("seaOk")),
             "stations": stations,
             "cells": cells,
         }
