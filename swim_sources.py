@@ -83,8 +83,32 @@ SEPA_PREDICTIONS = "https://bathingwaters.sepa.org.uk/json/currentstatus.json"
 ROI_RESTRICTIONS = "https://api.beaches.ie/api/beach/restricted/500"
 
 # England weekly bacterial samples, one call for every site in an ISO week.
+# THE LAB RESULTS THEMSELVES, not just the grade they roll up into.
+#
+# A classification is four seasons of samples averaged into one word. These are
+# the individual counts behind it: the E. coli and intestinal enterococci found
+# in one bottle of water, on one named day. Every rival shows the word; the ones
+# that show the numbers are more convincing, because a number against a limit is
+# checkable and a word is something you have to take on trust.
+#
+# Weekly, and a single week covers only about two thirds of the English sites —
+# they are not all sampled on the same day. Four weeks back reaches 462 of 464.
 EA_SAMPLES = ("https://environment.data.gov.uk/doc/bathing-water-quality/in-season/sample.json"
-              "?_pageSize=1000&sampleWeek=http%3A%2F%2Freference.data.gov.uk%2Fid%2Fweek%2F{week}")
+              "?_pageSize=1500&sampleWeek=http%3A%2F%2Freference.data.gov.uk%2Fid%2Fweek%2F{week}")
+NRW_SAMPLES = ("https://environment.data.gov.uk/wales/bathing-waters/doc/bathing-water-quality"
+               "/in-season/sample.json"
+               "?_pageSize=1500&sampleWeek=http%3A%2F%2Freference.data.gov.uk%2Fid%2Fweek%2F{week}")
+SAMPLE_WEEKS_BACK = 4
+
+# The Bathing Water Directive limits a single sample is read against, per 100ml.
+# NOT a pass mark for one bottle: the Directive applies these as percentiles
+# across a whole season, so one sample over the line is not a failed beach — and
+# the page has to say so rather than implying a verdict these numbers cannot
+# carry. Coastal and transitional waters are held to the tighter pair.
+SAMPLE_LIMITS = {
+    "coastal": {"ecoli": (250, 500), "ent": (100, 200)},
+    "inland":  {"ecoli": (500, 1000), "ent": (200, 400)},
+}
 
 # ---------------------------------------------------------------------------
 # Live storm overflow feeds

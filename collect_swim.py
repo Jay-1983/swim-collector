@@ -30,6 +30,7 @@ import math
 import io
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -1273,6 +1274,116 @@ def sea_temperature(sites, feed, previous=None):
     return got, NOW
 
 
+def latest_samples(sites, feed):
+    """The most recent lab result for each bathing water, England and Wales.
+
+    WHY THIS AND NOT JUST THE GRADE. The annual classification is four seasons
+    of samples rolled into one word, and every site on this subject shows it.
+    These are the counts behind it — the E. coli and intestinal enterococci in
+    one bottle, taken by hand on a named day. A number against a published limit
+    is something a reader can check; a word is something they have to take on
+    trust.
+
+    THREE THINGS THIS MUST NOT DO, all of them ways of saying more than a single
+    sample can carry:
+
+      * Report "<10" as 10. The qualifier is a separate field and means the lab
+        did not find enough to count. Printing the bare number turns "too few to
+        measure" into a measurement.
+      * Treat one sample as a pass or a fail. The Directive applies its limits as
+        percentiles across a season, so a single count over the line is not a
+        failed beach. The limits travel with the reading so the page can show
+        where it sits WITHOUT calling it.
+      * Hide a discounted sample. The regulator marks samples taken in abnormal
+        conditions as discountable and leaves them out of the classification.
+        They are still the last thing anybody measured, so they are kept and
+        flagged rather than dropped.
+
+    England and Wales only — Scotland, Northern Ireland and Ireland publish no
+    equivalent in-season sample feed, so their pages say nothing here rather
+    than showing a gap as though it were a clean result.
+    """
+    weeks = []
+    today = NOW.date()
+    for back in range(S.SAMPLE_WEEKS_BACK):
+        d = today - timedelta(days=7 * back)
+        iso_year, iso_week, _ = d.isocalendar()
+        weeks.append("%04d-W%02d" % (iso_year, iso_week))
+
+    wanted = {s_["id"].split(":", 1)[1]: s_ for s_ in sites
+              if s_["id"][:1] in ("E", "W")}
+    got, failed = {}, 0
+    for template in (S.EA_SAMPLES, S.NRW_SAMPLES):
+        for wk in weeks:
+            try:
+                d = fetch_json(template.format(week=wk), timeout=60, tries=2)
+            except Exception as e:                  # noqa: BLE001
+                feed.error = e
+                failed += 1
+                continue
+            for it in (d.get("result") or {}).get("items") or []:
+                ref = ((it.get("bwq_bathingWater") or {}).get("_about") or "")
+                key = ref.rsplit("/", 1)[-1]
+                site = wanted.get(key)
+                if not site:
+                    continue
+                # TWO SHAPES FOR THE SAME FIELD. Most records give
+                # sampleDateTime as a reference.data.gov.uk URL ending in the
+                # timestamp; some give an object carrying inXSDDateTime. Reading
+                # only the first shape and str()-ing the second wrote the whole
+                # dict into the date, and "2026-09-01T10:59:00', 'inXSDDateTime'
+                # ..." would have shipped as the day the water was sampled.
+                raw = it.get("sampleDateTime")
+                if isinstance(raw, dict):
+                    when = ((raw.get("inXSDDateTime") or {}).get("_value")
+                            or str(raw.get("_about") or "").rsplit("/", 1)[-1])
+                else:
+                    when = str(raw or "").rsplit("/", 1)[-1]
+                # A timestamp this code cannot read is not a sample to publish.
+                if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", str(when or "")):
+                    continue
+                # NEWEST WINS, and weeks are walked newest first, so an older
+                # week must never overwrite a reading already stored.
+                have = got.get(site["id"])
+                if have and have["at"] >= when:
+                    continue
+                rec = {"at": when}
+                for field, short in (("escherichiaColi", "ecoli"),
+                                     ("intestinalEnterococci", "ent")):
+                    n = it.get(field + "Count")
+                    if n is None:
+                        continue
+                    rec[short] = n
+                    q = ((it.get(field + "Qualifier") or {}).get("_about") or "")
+                    if q.endswith("lessThan"):
+                        rec[short + "Lt"] = True
+                    elif q.endswith("greaterThan"):
+                        rec[short + "Gt"] = True
+                if "ecoli" not in rec and "ent" not in rec:
+                    continue
+                disc = it.get("discountable")
+                if isinstance(disc, dict):
+                    disc = disc.get("_value")
+                if str(disc).lower() == "true":
+                    rec["discounted"] = True
+                # Which pair of limits this reading is read against. Sent with
+                # the reading so the page can never pair a count with the wrong
+                # standard.
+                rec["limits"] = ("coastal" if (site.get("kind") or "") in SEA_KINDS
+                                 else "inland")
+                got[site["id"]] = rec
+
+    feed.count = len(got)
+    feed.at = NOW
+    # A ROUND THAT REACHED NOTHING IS NOT A ROUND WITH NO SAMPLES. Anything at
+    # all means the endpoint answered; zero with failures means it did not.
+    feed.ok = bool(got) or failed == 0
+    if failed:
+        feed.partial = "%d of %d weekly fetches failed" % (
+            failed, S.SAMPLE_WEEKS_BACK * 2)
+    return got
+
+
 def rainfall(sites, feed, previous=None, max_age_min=None):
     """Rain in the last 24 and 48 hours at every beach.
 
@@ -2238,6 +2349,18 @@ def main():
             rec["ni"] = n["indicator"]
             rec["niAt"] = n.get("at")
         out[s["id"]] = rec
+    # THE LAB COUNTS, attached to the site they belong to so the beach page
+    # needs no second lookup and the two can never describe different places.
+    samples = run("Bathing water samples",
+                  lambda f: latest_samples(sites, f),
+                  covers=["England", "Wales"], escalates=False) or {}
+    for _sid, _rec in out.items():
+        _sm = samples.get(_sid)
+        if _sm:
+            _rec["sample"] = _sm
+    print("    %-9s %4d  (latest lab result, England and Wales)"
+          % ("samples", len(samples)))
+
     counts["surfWarned"] = surf_warned
     for k in ("avoid", "advised", "caution", "unknown", "ok"):
         print("    %-9s %4d" % (k, counts[k]))
