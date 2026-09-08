@@ -1987,6 +1987,126 @@ def verdict(site, ctx):
 
 # ---------------------------------------------------------------------------
 
+RIVER_LEVELS = ("https://environment.data.gov.uk/flood-monitoring/data/readings"
+                "?latest&parameter=level&_limit=10000")
+# The Agency publishes every fifteen minutes and most gauges report every
+# fifteen or thirty. Beyond three hours a reading is not "now" by any reading of
+# the word, and a river can rise a long way in three hours.
+RIVER_MAX_AGE_MIN = 180
+
+
+def collect_rivers(feeds):
+    """Today's level at every gauged river reach.
+
+    ONE CALL FOR ALL OF THEM. The Agency will return the latest reading for
+    every level measure in the country in a single request — about 1.3MB — so
+    this costs one fetch rather than 1,912 of them, and asking per station would
+    be both slower and ruder.
+
+    WHAT IS PUBLISHED IS A POSITION, NOT A NUMBER ALONE. A level is measured
+    against a datum belonging to that station, so the reading only means
+    something beside the range that station usually runs at. Both go out
+    together and the page is written so it can never show one without the other.
+
+    A reading older than three hours is dropped rather than shown. A river can
+    rise a long way in three hours, and a stale level presented as today's is
+    the same fault as a stale bathing water verdict.
+    """
+    f = feeds["River levels"] = Feed("River levels", covers=["England"],
+                                     escalates=False)
+    path = os.path.join(OUT, "rivers.json")
+    if not os.path.exists(path):
+        print("    %-32s no register yet — run build_rivers.py" % "River levels")
+        return None
+    try:
+        reg = json.load(io.open(path, encoding="utf-8")).get("rivers") or []
+    except Exception as e:                              # noqa: BLE001
+        f.error = e
+        print("    %-32s register unreadable: %s" % ("River levels", str(e)[:70]))
+        return None
+
+    try:
+        d = fetch_json(RIVER_LEVELS, timeout=120, tries=3)
+    except Exception as e:                              # noqa: BLE001
+        f.error = e
+        print("    %-32s FAILED %s" % ("River levels", str(e)[:120]))
+        return None
+
+    # Keyed by the measure id the register recorded, so a station with an
+    # upstream and a downstream gauge cannot have the wrong one read for it.
+    latest = {}
+    for it in (d.get("items") or []):
+        m = str(it.get("measure") or "").rsplit("/", 1)[-1]
+        v = it.get("value")
+        # A few measures answer with a list when the station reports twice in
+        # the same minute. Neither value is more current than the other, so
+        # take the last and move on rather than guessing.
+        if isinstance(v, list):
+            v = v[-1] if v else None
+        if not m or not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        latest[m] = (v, it.get("dateTime"))
+
+    out, stale, missing, faulty = {}, 0, 0, 0
+    for r in reg:
+        got = latest.get(r.get("measure"))
+        if not got:
+            missing += 1
+            continue
+        value, when = got
+        age = hours_since(parse_iso(when)) if when else None
+        if age is None or age * 60 > RIVER_MAX_AGE_MIN or age < -0.25:
+            stale += 1
+            continue
+        low, high = r.get("low"), r.get("high")
+        if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+            continue
+        # A READING THE GAUGE HAS NEVER SEEN IS A BROKEN GAUGE, NOT A DRY RIVER.
+        #
+        # Spring Brook at Grove Park reports -27.6m against a typical range of
+        # 0.39 to 0.45. Published, that is "far below normal" on a page about a
+        # brook that is running perfectly well. The Agency records the highest
+        # and lowest this gauge has ever read, which is the right yardstick: a
+        # record can be broken, so there is room either side, but not by half a
+        # metre on a brook that runs in centimetres.
+        span = high - low
+        floor = r.get("minRec")
+        ceiling = r.get("maxRec")
+        margin = max(span, 0.2)
+        if isinstance(floor, (int, float)) and value < floor - margin:
+            faulty += 1
+            continue
+        if isinstance(ceiling, (int, float)) and value > ceiling + margin:
+            faulty += 1
+            continue
+        # Where today sits in the station's usual range, as a fraction: 0 is the
+        # bottom of normal, 1 the top, above 1 is higher than this gauge usually
+        # runs. Computed here so every page and the map agree on one definition.
+        band = (value - low) / span if span > 0 else None
+        out[r["id"]] = {
+            "v": round(value, 3),
+            "at": when,
+            "band": round(band, 3) if band is not None else None,
+        }
+
+    f.count = len(out)
+    f.at = NOW
+    f.ok = bool(out) and len(out) >= len(reg) * 0.5
+    notes = []
+    if stale:
+        notes.append("%d over %d minutes old" % (stale, RIVER_MAX_AGE_MIN))
+    if missing:
+        notes.append("%d not reporting" % missing)
+    if faulty:
+        notes.append("%d outside anything the gauge has recorded" % faulty)
+    if notes:
+        f.partial = ", ".join(notes)
+    print("    %-32s %4d of %d reaches%s"
+          % ("River levels", len(out), len(reg),
+             " (" + f.partial + ")" if f.partial else ""))
+    return {"at": iso(NOW), "rivers": out}
+
+
 def collect_waterfalls(feeds):
     """The waterfall side: rainfall only, and a flow reading built from it.
 
@@ -2485,6 +2605,13 @@ def main():
     body = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)
     io.open(os.path.join(OUT, LOCAL_SNAPSHOT), "w", encoding="utf-8").write(body)
 
+    print("Rivers")
+    rivers_snapshot = collect_rivers(feeds)
+    rivers_body = None
+    if rivers_snapshot:
+        rivers_body = json.dumps(rivers_snapshot, separators=(",", ":"),
+                                 ensure_ascii=False)
+
     print("Waterfalls")
     falls_snapshot = collect_waterfalls(feeds)
     falls_body = None
@@ -2563,6 +2690,7 @@ def main():
         # past. The site shows a stale forecast; nobody misses a warning.
         publish(body)
         for label, payload, kind in (("waterfall flow", falls_body, "falls"),
+                                     ("river levels", rivers_body, "rivers"),
                                      ("week forecast", week_body, "week")):
             if not payload:
                 continue

@@ -212,8 +212,15 @@ def main():
             "catchment": " ".join(str(s.get("catchmentName") or "").split()),
             "name": label_of(river, s.get("town"), s.get("label")),
             "low": low, "high": high,
+            # WHAT THIS GAUGE HAS EVER READ, both ends. Used to throw out a
+            # broken sensor: Spring Brook at Grove Park reports -27.6m against
+            # a typical range of 0.39-0.45, and published as a level that is
+            # not a dry brook, it is a fault. The Agency's own record is the
+            # right yardstick for "this cannot be a real reading".
             "maxRec": num((ss.get("maxOnRecord") or {}).get("value")
                           if isinstance(ss.get("maxOnRecord"), dict) else None),
+            "minRec": num((ss.get("minOnRecord") or {}).get("value")
+                          if isinstance(ss.get("minOnRecord"), dict) else None),
             "unit": unit,
             "measure": str(stage["@id"]).rsplit("/", 1)[-1],
         })
