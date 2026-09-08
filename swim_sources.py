@@ -98,7 +98,12 @@ EA_SAMPLES = ("https://environment.data.gov.uk/doc/bathing-water-quality/in-seas
 NRW_SAMPLES = ("https://environment.data.gov.uk/wales/bathing-waters/doc/bathing-water-quality"
                "/in-season/sample.json"
                "?_pageSize=1500&sampleWeek=http%3A%2F%2Freference.data.gov.uk%2Fid%2Fweek%2F{week}")
-SAMPLE_WEEKS_BACK = 4
+# TWO, MATCHING THE LARDER. The collector cannot reach the Environment Agency
+# directly — it runs in the United States and the EA refuses non-UK requests —
+# so it reads UK-side copies warmed by lib/ea-cache.js. Asking for a week that
+# list does not warm returns nothing at all, so this number and dailyUrls() are
+# one decision in two files and must move together.
+SAMPLE_WEEKS_BACK = 2
 
 # The Bathing Water Directive limits a single sample is read against, per 100ml.
 # NOT a pass mark for one bottle: the Directive applies these as percentiles

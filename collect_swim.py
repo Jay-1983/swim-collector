@@ -2354,12 +2354,37 @@ def main():
     samples = run("Bathing water samples",
                   lambda f: latest_samples(sites, f),
                   covers=["England", "Wales"], escalates=False) or {}
+    # CARRIED FORWARD, so coverage fills in rather than sawing up and down.
+    #
+    # Only two weeks of samples are warmed in the larder, and sites are not all
+    # sampled in the same week, so any single run sees roughly two thirds of
+    # them. Without this a beach would show its count one week and nothing the
+    # next, which reads as the data having been withdrawn rather than as nobody
+    # having been back with a bottle. A sample never goes stale in a way that
+    # matters here because every one of them is shown with the day it was taken:
+    # an old reading says it is old, in words, on the page.
+    carried = 0
+    # ONE READ OF THE PUBLISHED SNAPSHOT, SHARED. The push round below needs the
+    # same document to work out which beaches have newly been warned, and it is
+    # ~450KB. Read here, before anything is published — reading it afterwards
+    # would compare the run against itself — and handed on rather than fetched
+    # twice.
+    published_before = previous_sites()
+    was = published_before or {}
     for _sid, _rec in out.items():
         _sm = samples.get(_sid)
+        if not _sm:
+            _old = (was.get(_sid) or {}).get("sample") if isinstance(was, dict) else None
+            # Never let a carried copy overwrite a fresher one, and never carry
+            # something that is not a sample.
+            if isinstance(_old, dict) and _old.get("at"):
+                _sm = _old
+                carried += 1
         if _sm:
             _rec["sample"] = _sm
-    print("    %-9s %4d  (latest lab result, England and Wales)"
-          % ("samples", len(samples)))
+    print("    %-9s %4d  (latest lab result, England and Wales%s)"
+          % ("samples", sum(1 for r in out.values() if r.get("sample")),
+             ", %d carried from the last run" % carried if carried else ""))
 
     counts["surfWarned"] = surf_warned
     for k in ("avoid", "advised", "caution", "unknown", "ok"):
@@ -2523,7 +2548,8 @@ def main():
     if "--publish" in sys.argv:
         # What the site is showing before we replace it. Fetched first, or the
         # comparison would be against the readings we are about to publish.
-        was = previous_sites()
+        # Read once, up with the samples, for the reason given there.
+        was = published_before
 
         # THE READINGS ARE PUBLISHED FIRST AND ALONE. publish() raises on a
         # non-200, and these ran in a bare sequence — so a failure publishing
