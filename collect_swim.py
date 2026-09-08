@@ -2014,15 +2014,19 @@ def collect_rivers(feeds):
     """
     f = feeds["River levels"] = Feed("River levels", covers=["England"],
                                      escalates=False)
-    path = os.path.join(OUT, "rivers.json")
-    if not os.path.exists(path):
-        print("    %-32s no register yet — run build_rivers.py" % "River levels")
-        return None
+    # THE PUBLISHED REGISTER, not a local copy. Same route the waterfalls take:
+    # the collector runs on a GitHub runner with none of these files on disk, so
+    # reading os.path.join(OUT, ...) found nothing and published no levels at
+    # all. One source of truth, and a rebuilt register reaches the collector the
+    # moment it is deployed.
     try:
-        reg = json.load(io.open(path, encoding="utf-8")).get("rivers") or []
+        reg = load_static("rivers.json").get("rivers") or []
     except Exception as e:                              # noqa: BLE001
         f.error = e
-        print("    %-32s register unreadable: %s" % ("River levels", str(e)[:70]))
+        print("    %-32s register unavailable: %s" % ("River levels", str(e)[:80]))
+        return None
+    if not reg:
+        print("    %-32s register is empty" % "River levels")
         return None
 
     try:
