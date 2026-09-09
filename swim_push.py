@@ -284,7 +284,30 @@ def run(previous_sites, current_sites, places, base_url=None, dry_run=False,
     # both snapshots. The message was never retried and nothing recorded that it
     # had not arrived.
     # Told only where every subscription that wanted it received it.
-    delivered = {sid for sid, n in wanted.items() if got.get(sid, 0) >= n}
+    #
+    # AND A BEACH NOBODY FOLLOWS IS OWED TO NOBODY.
+    #
+    # `wanted` only gains a beach when some subscription asks for it, so this
+    # was built from wanted.items() and a beach no subscriber follows never
+    # appeared in `delivered` at all — and fell through to the else below, which
+    # wrote it down as a warning we still owe somebody. With 941 bathing waters
+    # and a handful of subscribers that is nearly every warning on the list:
+    # last night's run reported "22 owed and carried forward" alongside "0
+    # failed", which is a contradiction in its own sentence.
+    #
+    # Nothing was lost by it — the retry finds no one to tell and the entries
+    # expire after a day. What it cost is the only signal there is. This run log
+    # and the owed store are how anybody would notice that a real warning had
+    # not arrived, and a genuine one would have been sitting invisible among
+    # twenty-two phantoms. On a site whose rule is that failures are announced
+    # rather than silent, a channel that cries wolf every half hour is the same
+    # fault wearing the opposite coat.
+    #
+    # Counted over both stores, so an entry owed from an earlier run whose
+    # follower has since removed the beach is settled too: there is no longer
+    # anybody to tell.
+    delivered = {sid for sid in set(fresh) | set(owed)
+                 if got.get(sid, 0) >= wanted.get(sid, 0)}
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     for s in fresh:
         if s in delivered:

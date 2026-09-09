@@ -119,6 +119,19 @@ def test_an_owed_warning_is_dropped_once_the_beach_is_clear():
     assert "E:1" not in (posted.get("told") or {}), posted
 
 
+def test_a_beach_nobody_follows_is_not_recorded_as_owed():
+    """The bug: `delivered` was built from the beaches somebody asked for, so a
+    warning nobody had subscribed to was written down as still owed. With 941
+    bathing waters and a handful of subscribers that is almost every warning
+    there is — and a real undelivered one would sit invisible among them."""
+    other = {"endpoint": "https://push.example/2", "sites": ["E:9"],
+             "keys": {"p256dh": "k", "auth": "a"}}
+    posted = run({}, [], {"subscriptions": [other], "told": {}, "owed": {}},
+                 PREV, NOW)
+    assert "E:1" not in (posted.get("owed") or {}), posted
+    assert "E:1" in (posted.get("told") or {}), posted
+
+
 def test_a_dead_subscription_owes_nothing():
     """404/410 means the phone is gone. There is nobody left to tell."""
     posted = run({}, ["410 Gone"], {"subscriptions": [SUB], "told": {}, "owed": {}},
