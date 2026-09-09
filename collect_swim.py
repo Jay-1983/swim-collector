@@ -2753,6 +2753,19 @@ def main():
         except Exception as e:                      # noqa: BLE001
             print("    push: skipped after an error — %s" % str(e)[:160])
 
+        # And the same warnings by email, for the people who will not install
+        # anything. A separate try: an email fault must not stop push, and a
+        # push fault must not stop email — they are two ways of saying the same
+        # thing to different people, and losing both to one bug is the failure
+        # this site is least able to afford.
+        try:
+            import swim_email
+            places = {sid: {"name": st["name"], "slug": st["slug"]}
+                      for sid, st in by_id.items()}
+            print("    " + swim_email.run(was, snapshot.get("sites") or {}, places))
+        except Exception as e:                      # noqa: BLE001
+            print("    email: skipped after an error — %s" % str(e)[:160])
+
     # AFTER publishing, deliberately. A reason type nobody has explained is
     # worth a red run; it is not worth holding back the readings, which would
     # leave the whole site stale over a wording problem.
