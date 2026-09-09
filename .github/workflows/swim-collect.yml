@@ -33,6 +33,10 @@ on:
         description: "Send a TEST notification to everyone subscribed (not a warning)"
         type: boolean
         default: false
+      email_test:
+        description: "Send a TEST email to everyone subscribed (not a warning)"
+        type: boolean
+        default: false
 
 concurrency:
   # Two overlapping runs would both append to the same day's history key, and KV
@@ -110,7 +114,9 @@ jobs:
           if [ "${{ inputs.fresh_rain }}" = "true" ]; then FORCE="$FORCE --fresh-rain"; fi
           PUSHTEST=""
           if [ "${{ inputs.push_test }}" = "true" ]; then PUSHTEST="--push-test"; fi
-          python3 collect_swim.py --publish $FORCE $PUSHTEST
+          MAILTEST=""
+          if [ "${{ inputs.email_test }}" = "true" ]; then MAILTEST="--email-test"; fi
+          python3 collect_swim.py --publish $FORCE $PUSHTEST $MAILTEST
 
       # A run that stood down writes no snapshot, so the summary below would
       # report the previous one as if it were fresh. Skip it in that case.

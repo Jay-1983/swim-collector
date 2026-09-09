@@ -60,11 +60,31 @@ def _enabled(base):
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
-def run(previous_sites, current_sites, places, base_url=None, dry_run=False):
-    """Returns a short summary for the run log. Never raises."""
+def run(previous_sites, current_sites, places, base_url=None, dry_run=False,
+        test=False):
+    """Returns a short summary for the run log. Never raises.
+
+    test=True asks the site to send everybody a message that says plainly it is
+    a test and says nothing about their water. It is the only way to answer
+    "are the emails still arriving" without waiting for a beach to turn bad,
+    which is the wrong way round on a safety site.
+    """
     base = base_url or os.environ.get("SWIM_DATA_BASE") or ""
     if not base:
         return "email: no SWIM_DATA_BASE — skipped"
+
+    if test:
+        try:
+            token = _token("swim-email")
+            if not token:
+                return "email: no OIDC token — test skipped"
+            r = _post(base, token, {"test": True})
+        except Exception as e:                            # noqa: BLE001
+            return "email TEST: could not reach the sender (%s)" % str(e)[:120]
+        if not r.get("ok"):
+            return "email TEST: refused (%s)" % str(r.get("error"))[:120]
+        return ("email TEST: %d sent, %d failed, %d subscribers"
+                % (r.get("sent", 0), r.get("failed", 0), r.get("subscribers", 0)))
 
     fresh = newly_warned(previous_sites, current_sites)
     # EVERY WARNED BEACH, not just the new ones. The other end needs this to

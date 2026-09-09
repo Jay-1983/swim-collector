@@ -2762,7 +2762,8 @@ def main():
             import swim_email
             places = {sid: {"name": st["name"], "slug": st["slug"]}
                       for sid, st in by_id.items()}
-            print("    " + swim_email.run(was, snapshot.get("sites") or {}, places))
+            print("    " + swim_email.run(was, snapshot.get("sites") or {}, places,
+                                         test="--email-test" in sys.argv))
         except Exception as e:                      # noqa: BLE001
             print("    email: skipped after an error — %s" % str(e)[:160])
 
