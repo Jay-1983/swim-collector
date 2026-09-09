@@ -203,7 +203,13 @@ OPEN_METEO = ("https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude=
               "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
               "precipitation_sum,wind_speed_10m_max,wind_direction_10m_dominant,"
               "wind_gusts_10m_max,uv_index_max,sunset"
-              "&past_days=2&forecast_days=7&timezone=GMT")
+              # SEVEN DAYS BACK, NOT TWO. The two were only ever for the 24
+              # and 48 hour totals. Seven lets a page show the WEEK of rain
+              # behind a reading, which is what decides whether a spill is
+              # likely — and 7 back plus 7 forward is fourteen days, which is
+              # exactly the fortnight Open-Meteo allows before it weights a
+              # request as more than one. Still one call per location.
+              "&past_days=7&forecast_days=7&timezone=GMT")
 OPEN_METEO_BATCH = 100
 
 # Sea temperature comes from a different service. It only answers for points at

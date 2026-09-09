@@ -1490,9 +1490,24 @@ def rainfall(sites, feed, previous=None, max_age_min=None):
                                  at("wind_direction_10m_dominant"),
                                  at("wind_gusts_10m_max"), at("uv_index_max"),
                                  sun_at(day, "sunset", i)])
+                # THE WEEK BEHIND, as its own list. Added beside the forecast
+                # rather than folded into it: "d" and "w" are read by the week
+                # strip on every beach and waterfall page, and lengthening them
+                # would have quietly turned a seven-day forecast into a
+                # fourteen-day one everywhere that draws it.
+                past_dates, past_rain = [], []
+                for i, d in enumerate(dates):
+                    if d >= today:
+                        continue
+                    v = (day.get("precipitation_sum") or [None] * len(dates))[i]
+                    past_dates.append(d)
+                    past_rain.append(None if v is None else round(v, 1))
                 if rows:
-                    DAILY[cell_key(key)] = {"d": [d for d in dates if d >= today],
-                                            "w": rows}
+                    rec = {"d": [d for d in dates if d >= today], "w": rows}
+                    if past_dates:
+                        rec["pd"] = past_dates
+                        rec["pr"] = past_rain
+                    DAILY[cell_key(key)] = rec
         if n < len(batches) - 1:
             # Open-Meteo's limit is 600 LOCATIONS a minute, not 600 requests, so
             # a batch of 100 must be followed by roughly ten seconds. Sending
@@ -2645,6 +2660,18 @@ def main():
         if len(v["d"]) > len(days):
             days = v["d"]
     cells = {k: v["w"] for k, v in DAILY.items()} if DAILY else (prev.get("cells") or {})
+    # THE WEEK OF RAIN BEHIND, alongside the week ahead. Carried forward with
+    # the same rule as the forecast: an old set of daily totals is still the
+    # right shape and is dated by pastDays, so a run that could not reach
+    # Open-Meteo shows last run's week rather than an empty chart.
+    rain_past = {k: v["pr"] for k, v in DAILY.items() if v.get("pr")}
+    past_days = []
+    for v in DAILY.values():
+        if len(v.get("pd") or []) > len(past_days):
+            past_days = v["pd"]
+    if not rain_past:
+        rain_past = prev.get("rainPast") or {}
+        past_days = prev.get("pastDays") or []
     if not days:
         days = prev.get("days") or []
     sea_now = sea if sea else (prev.get("sea") or {})
@@ -2667,11 +2694,15 @@ def main():
                       else prev.get("seaOk")),
             "stations": stations,
             "cells": cells,
+            "pastDays": past_days,
+            "rainPast": rain_past,
         }
         week_body = json.dumps(week, separators=(",", ":"))
         print("    %-32s %4d cells, %d days, %d with a sea temperature%s"
               % ("Week ahead", len(cells), len(days), len(sea_now),
                  "" if DAILY else " (forecast carried forward)"))
+        print("    %-32s %4d cells over %d days behind"
+              % ("Rain already fallen", len(rain_past), len(past_days)))
         print("    wrote week.json %.0f KB (%.0f KB gzipped)"
               % (len(week_body.encode()) / 1024.0,
                  len(gzip.compress(week_body.encode())) / 1024.0))
