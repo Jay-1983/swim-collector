@@ -541,8 +541,22 @@ def stale_check(feed, hours=8):
     Anglian only restamp a record when that outfall changes, so a perfectly
     healthy monitor can carry a six-week-old timestamp. It is the newest
     record in the feed that says whether the publisher is still alive.
+
+    AND A FEED THAT CANNOT SAY WHEN IT WAS UPDATED IS NOT A FRESH FEED.
+    This returned early on feed.at is None, which turned the whole freshness
+    guard into a no-op, silently, for any publisher who nulled or zeroed the
+    column it reads. epoch_ms() returns None for null, for a non-numeric value
+    and for anything <= 0, so one upstream schema change disables the eight-hour
+    freeze detector for that company permanently — and Feed.as_dict omits `at`
+    entirely, so nothing downstream can notice either.
+
+    The safe reading is the opposite of the old one: rows whose age cannot be
+    established cannot be trusted to mean "not discharging", which is the
+    conclusion merge_spills already reaches for a stale feed.
     """
     if feed.at is None:
+        feed.ok = False
+        feed.error = "no timestamp, so the rows cannot be dated"
         return
     age = hours_since(feed.at)
     if age is not None and age > hours:
@@ -570,18 +584,48 @@ def spills_southern(feed):
         low = msg.lower()
         now = low.startswith("there is an ongoing")
         recent = ("last 24 hours" in low) or ("last 72 hours" in low)
-        # "under review" and "unverified" mean Southern itself does not yet know.
-        blind = (("under review" in low) or ("unverified" in low) or not msg) and not now
+        # WHAT SOUTHERN SAYS WHEN THE MONITOR IS NOT WORKING.
+        #
+        # "under review" and "unverified" mean Southern itself does not yet
+        # know. So does "under maintenance", which was missing here — 5 of
+        # their 994 outfalls read that today, and it fell through as
+        # now=False, recent=False, offline=False: the site's word for "we
+        # looked and the monitor was fine". The eight common-schema companies
+        # send the same condition as Status=-1 and spills_common marks it
+        # offline correctly.
+        #
+        # It matters because a non-offline row earns "N monitored storm
+        # overflows within 2km" on the checklist, and that line alone is
+        # enough to hold a green verdict. 147 Southern outfalls sit within 2km
+        # of a bathing water and 70 beaches have Southern as their only
+        # monitored-overflow check — Brighton Central, Eastbourne, Hastings
+        # Pelham Beach, Seaford and Bexhill among them.
+        blind = (("under review" in low) or ("unverified" in low)
+                 or ("under maintenance" in low) or not msg) and not now
         out["SOU:%s" % oid] = state(now, None, None, recent=recent, offline=blind,
                                     note=msg or None, window=72)
     feed.ok, feed.count = True, len(out)
     feed.spilling = sum(1 for v in out.values() if v["now"])
     feed.offline = sum(1 for v in out.values() if v["offline"])
+    # THE TIMESTAMP WAS BEING FETCHED AND NEVER COMPARED WITH ANYTHING.
+    #
+    # spills_common, spills_wales and spills_scotland all end with
+    # stale_check(), which is what turns a frozen publisher into ok:False so
+    # merge_spills re-marks every row offline and the affected beaches drop to
+    # "can't say". This function set ok:True and stopped — its only freshness
+    # signal was read into feed.at under a comment calling freshness a nicety,
+    # and then never used.
+    #
+    # So a freeze in Southern's ArcGIS layer published 994 rows of "no releases
+    # in the last 72 hours" indefinitely, and 70 beaches held a green tick built
+    # on a feed that had stopped days earlier. The identical freeze at Thames,
+    # Welsh Water or Scottish Water is caught within eight hours.
     try:
         upd = arcgis_all(S.SOUTHERN_SITES.replace("/0/query", "/3/query"), "*", page=10)
         feed.at = parse_iso(attr(upd[0], "Last_Updated_Date")) if upd else None
-    except Exception:                               # noqa: BLE001 - freshness is a nicety
-        pass
+    except Exception:                               # noqa: BLE001
+        feed.at = None
+    stale_check(feed)
     return out
 
 
@@ -857,7 +901,21 @@ def ea_incidents(feed):
             ended = s_end is not None and s_end < NOW
             if (NOW - s_start).days <= 365 and not ended:
                 got.setdefault(sid, {})["suspension"] = {"why": s_desc, "at": iso(s_start)}
-    feed.ok, feed.count = True, len(got)
+    feed.count = len(got)
+    # THE TEST IS `rows`, NOT `got`.
+    #
+    # An empty `got` is the NORMAL answer here — most days no English bathing
+    # water has an open incident, and that is the good news this feed exists to
+    # confirm. So a floor on `got` would fail the feed almost every day.
+    #
+    # `rows` is the honest test: the register CSV carries a row per bathing
+    # water, around 600 of them, so zero rows means the download or the parse
+    # failed rather than that the country is clear. Without this, a schema
+    # change to the column names would keep ok:True while quietly finding no
+    # incidents ever again — and INCIDENT_FEED's gate would never fire.
+    feed.ok = bool(rows)
+    if not rows:
+        feed.error = "the incident register parsed to no rows at all"
     note_relay_age(feed, csv_url)
     return got
 
@@ -882,7 +940,7 @@ def predictions_scotland(feed, by_country_name):
     rather than implying today's water has been assessed."""
     d = fetch_json(S.SEPA_PREDICTIONS)
     rows = d if isinstance(d, list) else d.get("items", [])
-    got = {}
+    got, newest = {}, None
     for r in rows:
         sid = by_country_name.get(("Scotland", norm(r.get("bathing_water"))))
         if not sid:
@@ -893,7 +951,30 @@ def predictions_scotland(feed, by_country_name):
             "at": iso(when) if when else None,
             "reason": (r.get("override_reason_text") or "").strip() or None,
         }
-    feed.ok, feed.count = True, len(got)
+        if when is not None and (newest is None or when > newest):
+            newest = when
+    feed.count = len(got)
+    # DATED AND AGE-CHECKED, like every other escalating feed.
+    #
+    # This was the only one with no timestamp on the feed at all: it read
+    # last_updated per row and never set feed.at, so neither stale_check, the
+    # run log, nor the site's feed banner had anything to measure. verdict()
+    # then printed whatever was in the row as "SEPA's prediction for today" and
+    # "Today's prediction: good", with the row's real age carried alongside —
+    # so a beach could read "Today's prediction: good" and "3 days ago" in the
+    # same breath, under a green verdict.
+    #
+    # England and Wales have had the equivalent guard twice over for months:
+    # prf() drops records past their own expiresAt, records a `partial` when it
+    # falls back a day, and verdict() rewords the tick to "Yesterday's official
+    # pollution forecast, today's not published yet". Scotland had none of it.
+    feed.at = iso(newest) if newest else None
+    feed.ok = bool(rows)
+    if not rows:
+        feed.error = "the prediction feed parsed to no rows at all"
+    # 30 hours, not the 8 used for spill feeds: this is a once-a-morning
+    # publication, so anything inside a day and a bit is simply today's.
+    stale_check(feed, hours=30)
     return got
 
 
@@ -919,7 +1000,30 @@ def restrictions_roi(feed):
             "from": r.get("StartDate"),
             "notice": r.get("WarningNoticeUrl"),
         }
-    feed.ok, feed.count = True, len(got)
+    feed.count = len(got)
+    # A FEED THAT PARSED TO NOTHING IS NOT A COUNTRY WITH NO RESTRICTIONS.
+    #
+    # This ended `feed.ok = True` unconditionally, and everything above it can
+    # silently produce zero rows: the envelope is guessed three ways, the id
+    # comes from Code or LocationId and rows without one are skipped, and
+    # "I:%s" has to match the register exactly. Any of those going wrong gave
+    # {} with ok:True.
+    #
+    # That is worse here than anywhere else in this file. verdict() grants the
+    # Irish green tick from this feed's REACHABILITY, not from finding the
+    # beach in it, so 225 of 240 Irish beaches carry "Today's local authority
+    # bathing restrictions" as their entire checklist — and all 15 warned Irish
+    # beaches, 5 of them at avoid, are warned by nothing else. The Republic
+    # publishes no storm overflow data, so there is no second signal to catch a
+    # silent failure.
+    #
+    # `rows` is the test rather than `got`: the EPA answering with a populated
+    # list of beaches that all have HasRestrictionInPlace false is a real,
+    # healthy, common answer, and it correctly yields no restrictions. An
+    # envelope this code could not read at all is not.
+    feed.ok = bool(rows)
+    if not rows:
+        feed.error = "the restrictions feed parsed to no rows at all"
     return got
 
 
@@ -1599,6 +1703,27 @@ FORECAST_FEED = {"England": "EA pollution risk forecast",
                  "Northern Ireland": "NI sample quality",
                  "Ireland": "Ireland restrictions"}
 
+# A SECOND FEED WHOSE FAILURE WAS INVISIBLE.
+#
+# ctx["incidents"] is read in exactly one place and only ever to ADD a warning:
+# an open pollution incident or a bathing suspension. So when that fetch failed,
+# every open incident in England vanished from the run and nothing anywhere
+# recorded that the register had not been read. The beach kept its checklist
+# ticks and its "No warnings today" over a live sewage incident.
+#
+# Verified against the live register the day this was found: bathing-water.csv
+# carried four open incidents, Exmouth among them — type "sewage", started the
+# previous lunchtime. And the failure is routine rather than hypothetical: the
+# call goes through /swim/fetch, which answers 503 whenever the UK-side larder
+# has no copy yet, which is the same overnight condition prf() carries an
+# explicit day-back fallback for.
+#
+# Gated exactly like FORECAST_FEED, because the site's own banner already
+# promises it: "Beaches that rely on them are shown as 'can't say' rather than
+# clear". The blast radius is wide — every English bathing water drops to "can't
+# say" for that run — and that is the promise, not a side effect of it.
+INCIDENT_FEED = {"England": "EA incidents and suspensions"}
+
 
 def _outfall_row(ctx, key, dist, code):
     """One nearby outfall, as the page needs it: what it discharges into, how far
@@ -1955,6 +2080,16 @@ def verdict(site, ctx):
             gaps.append("Today's official information could not be fetched from %s"
                         % AUTHORITY.get(country, "the regulator"))
             level = raise_to("unknown")
+        # And the incident register, which can only ever add a warning and so
+        # went unmissed when it failed. See INCIDENT_FEED.
+        inc_name = INCIDENT_FEED.get(country)
+        if inc_name:
+            inc_feed = ctx["feeds"].get(inc_name)
+            if not (inc_feed and inc_feed.ok):
+                gaps.append("The open pollution incidents and bathing suspensions "
+                            "could not be read from %s, so an incident here would "
+                            "not show" % AUTHORITY.get(country, "the regulator"))
+                level = raise_to("unknown")
 
     # A green verdict has to be earned by something actually checked today.
     if level == "ok" and not checked:

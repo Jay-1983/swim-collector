@@ -77,6 +77,7 @@ jobs:
           python3 tests/test_push.py
           python3 tests/test_sea_carry.py
           python3 tests/test_email.py
+          python3 tests/test_feed_floors.py
 
       - name: Install the push library
         run: python -m pip install --quiet "pywebpush==2.0.3"
