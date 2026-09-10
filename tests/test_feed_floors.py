@@ -138,6 +138,24 @@ def test_sepa_is_dated_and_age_checked():
     ok("and age-checks it", "stale_check(feed" in b)
 
 
+def test_feed_at_is_always_a_datetime_never_a_string():
+    """I broke this on the way to fixing SEPA: `feed.at = iso(newest)` put an ISO
+    STRING where every other loader puts a datetime, and hours_since() does
+    arithmetic on it — "unsupported operand type(s) for -: 'datetime.datetime'
+    and 'str'" took the whole SEPA feed down on the next real run.
+
+    Feed.as_dict calls iso() itself, so the attribute is always the object."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "collect_swim.py"), encoding="utf-8").read()
+    bad = [l.strip() for l in src.split("\n")
+           if "feed.at" in l and "=" in l and "iso(" in l and "parse_iso" not in l]
+    ok("no loader assigns iso() to feed.at", not bad, repr(bad))
+    # And prove the arithmetic works on what stale_check is actually given.
+    f = F(at=m.NOW, ok_=True)
+    m.stale_check(f)
+    ok("stale_check does arithmetic on it without raising", f.ok is True)
+
+
 def test_the_incident_register_failing_is_disclosed():
     """ctx["incidents"] is read in exactly one place and only ever to ADD a
     warning, so when that fetch failed every open incident in England vanished

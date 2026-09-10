@@ -968,7 +968,12 @@ def predictions_scotland(feed, by_country_name):
     # prf() drops records past their own expiresAt, records a `partial` when it
     # falls back a day, and verdict() rewords the tick to "Yesterday's official
     # pollution forecast, today's not published yet". Scotland had none of it.
-    feed.at = iso(newest) if newest else None
+    # A DATETIME, not an ISO string. Feed.as_dict calls iso() itself and
+    # hours_since() does arithmetic on it, so handing it text raised
+    # "unsupported operand type(s) for -: 'datetime.datetime' and 'str'" and
+    # took the whole feed down. Every other loader assigns `newest` directly;
+    # this is the shape they all use.
+    feed.at = newest
     feed.ok = bool(rows)
     if not rows:
         feed.error = "the prediction feed parsed to no rows at all"
