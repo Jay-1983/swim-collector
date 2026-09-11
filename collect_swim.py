@@ -2568,8 +2568,10 @@ def main():
     # longest across a mixture of two passes that are fetched at different times
     # and with different max ages.
     #
-    # The week payload is for the beach pages. A copy, not a reference, because
-    # the second pass mutates the original in place.
+    # The day LABELS are the beach pass's. A copy, not a reference, because the
+    # second pass mutates the original in place. The cells themselves are taken
+    # from the whole of DAILY further down — the waterfall pages read the same
+    # payload and need theirs.
     beach_daily = dict(DAILY)
     print("    %-32s %4d beaches%s"
           % ("Rainfall", len(rain),
@@ -2859,13 +2861,22 @@ def main():
     for v in beach_daily.values():
         if len(v["d"]) > len(days):
             days = v["d"]
-    cells = ({k: v["w"] for k, v in beach_daily.items()} if beach_daily
+    # CELLS FROM BOTH PASSES, day labels from the beach pass only.
+    #
+    # Taking the cells from beach_daily too was wrong, and badly: the waterfall
+    # pages read this same payload, and 2,336 of the 2,521 waterfalls sit in
+    # inland cells no bathing water occupies. They lost their forecast and their
+    # rain chart entirely. The defect was never the cell maps — a cell key means
+    # the same thing whichever pass filled it — it was `days` and `pastDays`,
+    # single arrays taken from whichever pass happened to be longest. Those come
+    # from the beach pass; the cells are the union.
+    cells = ({k: v["w"] for k, v in DAILY.items()} if DAILY
              else (prev.get("cells") or {}))
     # THE WEEK OF RAIN BEHIND, alongside the week ahead. Carried forward with
     # the same rule as the forecast: an old set of daily totals is still the
     # right shape and is dated by pastDays, so a run that could not reach
     # Open-Meteo shows last run's week rather than an empty chart.
-    rain_past = {k: v["pr"] for k, v in beach_daily.items() if v.get("pr")}
+    rain_past = {k: v["pr"] for k, v in DAILY.items() if v.get("pr")}
     past_days = []
     for v in beach_daily.values():
         if len(v.get("pd") or []) > len(past_days):
