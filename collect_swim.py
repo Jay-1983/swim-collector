@@ -2363,10 +2363,19 @@ def previous_week():
         return None
     try:
         d = fetch_json(url + ("&" if "?" in url else "?") + "week=1", tries=1, timeout=20)
+        # rainPast AND pastDays TOO, or the carry-forward that reads them is
+        # dead code. The week block does `if not rain_past: rain_past =
+        # prev.get("rainPast")`, and this function never returned that key — so
+        # it was always {} and the seven-day rainfall chart vanished from every
+        # beach page on every run where rainfall was not re-fetched, which is
+        # five runs in six. The comment beside that fallback describes exactly
+        # the behaviour it could not deliver.
         return {"seaAt": d.get("seaAt"), "sea": d.get("sea") or {},
                 "seaOk": d.get("seaOk"),
                 "stations": d.get("stations") or {},
-                "days": d.get("days") or [], "cells": d.get("cells") or {}}
+                "days": d.get("days") or [], "cells": d.get("cells") or {},
+                "rainPast": d.get("rainPast") or {},
+                "pastDays": d.get("pastDays") or []}
     except Exception:                               # noqa: BLE001
         return None
 
@@ -2549,6 +2558,19 @@ def main():
     print("Rain")
     rain_res = run("Rainfall", lambda f: rainfall(sites, f, previous_snapshot()))
     rain, rain_at = rain_res if rain_res else ({}, None)
+    # TAKEN NOW, BEFORE THE WATERFALL PASS WRITES INTO THE SAME GLOBAL.
+    #
+    # rainfall() fills DAILY as a side effect and never clears it, and it is
+    # called twice: once here for the 941 bathing waters, and again inside
+    # collect_waterfalls() for the 2,521 waterfalls. The week payload is built
+    # from DAILY further down, AFTER both — so it shipped the union of the two,
+    # and `days` and `pastDays` were taken from whichever array happened to be
+    # longest across a mixture of two passes that are fetched at different times
+    # and with different max ages.
+    #
+    # The week payload is for the beach pages. A copy, not a reference, because
+    # the second pass mutates the original in place.
+    beach_daily = dict(DAILY)
     print("    %-32s %4d beaches%s"
           % ("Rainfall", len(rain),
              " (" + feeds["Rainfall"].partial + ")" if feeds["Rainfall"].partial else ""))
@@ -2834,17 +2856,18 @@ def main():
     week_body = None
     prev = prev_week or {}
     days = []
-    for v in DAILY.values():
+    for v in beach_daily.values():
         if len(v["d"]) > len(days):
             days = v["d"]
-    cells = {k: v["w"] for k, v in DAILY.items()} if DAILY else (prev.get("cells") or {})
+    cells = ({k: v["w"] for k, v in beach_daily.items()} if beach_daily
+             else (prev.get("cells") or {}))
     # THE WEEK OF RAIN BEHIND, alongside the week ahead. Carried forward with
     # the same rule as the forecast: an old set of daily totals is still the
     # right shape and is dated by pastDays, so a run that could not reach
     # Open-Meteo shows last run's week rather than an empty chart.
-    rain_past = {k: v["pr"] for k, v in DAILY.items() if v.get("pr")}
+    rain_past = {k: v["pr"] for k, v in beach_daily.items() if v.get("pr")}
     past_days = []
-    for v in DAILY.values():
+    for v in beach_daily.values():
         if len(v.get("pd") or []) > len(past_days):
             past_days = v["pd"]
     if not rain_past:

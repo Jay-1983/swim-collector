@@ -800,6 +800,7 @@ def main():
 
     print("Beach registers")
     sites = []
+    lost = []
     for label, fn in (("England", sites_england), ("Wales", sites_wales),
                       ("Scotland", sites_scotland), ("N Ireland", sites_ni),
                       ("Ireland", sites_roi)):
@@ -808,8 +809,27 @@ def main():
             sites.extend(got)
             print("    %-10s %4d sites" % (label, len(got)))
         except Exception as e:                      # noqa: BLE001
+            lost.append(label)
             print("    %-10s FAILED: %s" % (label, e))
     print("    total      %4d sites" % len(sites))
+    # A WHOLE COUNTRY MISSING IS NOT A 10% DROP.
+    #
+    # Each fetch above is wrapped in its own try/except so one dead feed cannot
+    # take the run down, and write()'s only protection is a 10% shrink guard.
+    # Against 941 sites that refuses anything below 846.9 — so losing England,
+    # Ireland or Wales is caught, and losing SCOTLAND (90 sites, leaving 851) or
+    # NORTHERN IRELAND (33, leaving 908) is written out silently. The register
+    # is what every page, count and map on the site is built from, so those two
+    # countries would simply cease to exist with nothing said anywhere.
+    #
+    # The percentage cannot be tightened enough to cover Northern Ireland
+    # without refusing legitimate seasonal churn, so the rule is not a
+    # percentage: a country that failed is a refusal on its own terms.
+    if lost and not force:
+        raise SystemExit(
+            "    REFUSED: %s failed, so the register would be written without "
+            "%s entirely. Run again, or pass --force if the loss is real."
+            % (", ".join(lost), "them" if len(lost) > 1 else "it"))
 
     sites.sort(key=lambda s: (s["country"], s["name"]))
     add_regions(sites)
