@@ -2727,7 +2727,29 @@ def main():
             picks = [w for w in picks if w.get("t") != "clear"] or picks
         picks.sort(key=lambda w: ORDER.get(w.get("t"), 8))
         why = picks[0]["text"] if picks else ""
-        brief_sites[sid] = [rec["v"], why[:120]]
+        # A THIRD ELEMENT, FOR THE BEACHES THAT HAVE NO REASON TO GIVE.
+        #
+        # The out-of-season message is a GAP, not a reason, and this row carried
+        # reasons only — so on 16 September, when Scotland, Northern Ireland and
+        # Ireland go out of season, 363 pages titled "Can I swim at X?" would
+        # have answered "Can't say today" with nothing at all in the HTML beside
+        # it. England and Wales follow on 1 October. That is the state you can
+        # already see on any beach that is unknown for another reason today:
+        # /beach/wardie-bay/ serves a completed verdict over an empty
+        # <div id="v-body"></div>.
+        #
+        # /how-it-works/ promises the opposite in as many words: "Out of season
+        # the site says so rather than showing green."
+        #
+        # Only when there is no reason, and only the first gap, because this
+        # payload is read by the edge on every page view of the whole site and
+        # gaps are already sorted most-urgent-first.
+        row = [rec["v"], why[:120]]
+        if not why:
+            g = (rec.get("gaps") or [])
+            if g:
+                row.append(g[0][:140])
+        brief_sites[sid] = row
         if rec["v"] in ("avoid", "advised"):
             alerts.append({
                 "id": sid, "name": site["name"], "slug": site["slug"],
