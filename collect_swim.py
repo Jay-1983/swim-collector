@@ -191,6 +191,19 @@ class Feed:
         self.ok = False
         self.partial = None
         self.error = None
+        # NOT THE SAME THING AS A FAILURE.
+        #
+        # A feed can be answered perfectly and still hold nothing for today.
+        # Natural Resources Wales publishes the daily forecast at about 08:40
+        # and yesterday's expires at 08:29, so for roughly three quarters of an
+        # hour every morning — longer when the relay lags — neither day has a
+        # current forecast. All 114 Welsh beaches correctly went to "can't say",
+        # and then told the reader "today's official information could not be
+        # fetched", which is not what happened and reads as a broken site at
+        # twenty past eight in the morning. The verdict is the same either way;
+        # only the reason differs, and the reason is the whole value of saying
+        # anything.
+        self.pending = None
         self.at = None                  # freshest timestamp inside the data
         self.count = 0
         self.spilling = 0
@@ -208,6 +221,8 @@ class Feed:
             d["partial"] = self.partial
         if self.error:
             d["error"] = str(self.error)[:160]
+        if self.pending:
+            d["pending"] = self.pending
         if self.covers:
             d["covers"] = self.covers
         d["escalates"] = self.escalates
@@ -863,6 +878,11 @@ def prf(feed, url=None, prefix="E:"):
         # Neither day could be read. That IS a failed feed, and saying so is what
         # puts the affected beaches at "can't say" rather than quietly clear.
         raise last_error
+    if not got:
+        # Both days answered and neither held a forecast still in date. Nothing
+        # is broken: today's has not been published yet. Recorded so the page
+        # can say that instead of blaming a fetch that worked.
+        feed.pending = "not published yet"
     return got
 
 
@@ -2082,8 +2102,18 @@ def verdict(site, ctx):
         # failed forecast elsewhere, not quietly ignored.
         feed = ctx["feeds"].get(FORECAST_FEED.get(country, ""))
         if not (feed and feed.ok):
-            gaps.append("Today's official information could not be fetched from %s"
-                        % AUTHORITY.get(country, "the regulator"))
+            if feed is not None and feed.pending:
+                # Nothing is wrong. It is early, and the regulator has not
+                # posted today's forecast yet. Said plainly, with the reason,
+                # because "could not be fetched" reads as a broken site and
+                # sends a reader back to whatever they used before.
+                gaps.append("%s has not published today's pollution risk "
+                            "forecast yet, so there is nothing to show for "
+                            "today. It usually appears during the morning"
+                            % AUTHORITY.get(country, "The regulator"))
+            else:
+                gaps.append("Today's official information could not be fetched "
+                            "from %s" % AUTHORITY.get(country, "the regulator"))
             level = raise_to("unknown")
         # And the incident register, which can only ever add a warning and so
         # went unmissed when it failed. See INCIDENT_FEED.
