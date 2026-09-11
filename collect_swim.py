@@ -2758,7 +2758,23 @@ def main():
                 "country": site["country"],
             })
     alerts.sort(key=lambda a: (0 if a["level"] == "avoid" else 1, a["where"], a["name"]))
-    brief_body = json.dumps({"at": iso(NOW), "sites": brief_sites, "alerts": alerts},
+    # THE SLUGS THAT COULD NOT BE READ, so a one-beach feed can say so.
+    #
+    # /swim/alerts.xml?beach=x is an empty feed when x is not warned — which is
+    # the normal, good answer — and also when x could not be read at all. The
+    # feed's site-wide "N of 941 could not be read" caveat is true but says
+    # nothing about the beach the reader actually subscribed to for, which is
+    # the whole point of a per-beach feed.
+    #
+    # brief.sites is keyed by site id and carries no slug, deliberately: it is
+    # read by the edge on every page view of the whole site and 941 slugs is the
+    # wrong thing to put there. This is the short list instead — about 70 today
+    # — and only the unknown ones.
+    unknown_slugs = sorted(by_id[sid]["slug"] for sid, row in brief_sites.items()
+                           if row[0] == "unknown" and sid in by_id
+                           and by_id[sid].get("slug"))
+    brief_body = json.dumps({"at": iso(NOW), "sites": brief_sites,
+                             "alerts": alerts, "unknown": unknown_slugs},
                             separators=(",", ":"), ensure_ascii=False)
     print("    %-32s %4d sites, %d under a warning (%.0f KB)"
           % ("Brief", len(brief_sites), len(alerts), len(brief_body.encode()) / 1024.0))
