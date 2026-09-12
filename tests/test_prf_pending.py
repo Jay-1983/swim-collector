@@ -90,6 +90,49 @@ feed2, got2 = run_prf([item("ukl1", "2026-09-12T08:29:00",
 check("a forecast still in date is used", len(got2) == 1, repr(got2))
 check("and nothing is marked pending", feed2.pending is None and feed2.ok is True)
 
+# ---- prf() deciding WHICH pending state it is -----------------------------
+#
+# The wording tests below set `pending` by hand, so on their own they prove the
+# sentence and not the detection. This drives prf() itself with a relay age, so
+# the branch that tells the two apart is actually executed.
+
+def run_prf_with_relay(items, now, relay_seconds):
+    feed = m.Feed("NRW pollution risk forecast", covers=["Wales"])
+    real_fetch, real_now = m.fetch_json, m.NOW
+    m.fetch_json = fake_fetch(items)
+    m.NOW = now
+    m.RELAY_AGE.clear()
+    try:
+        # Every URL prf() asks for reports the same age, which is what the relay
+        # does: it is one cached document per day, not per request.
+        class AgeingDict(dict):
+            def get(self, k, d=None):
+                return (relay_seconds, None)
+        old_relay = m.RELAY_AGE
+        m.RELAY_AGE = AgeingDict()
+        try:
+            m.prf(feed, m.S.NRW_PRF, "W:")
+        finally:
+            m.RELAY_AGE = old_relay
+    finally:
+        m.fetch_json, m.NOW = real_fetch, real_now
+    return feed
+
+
+EXPIRED = [item("ukl1", "2026-09-11T08:29:00")]
+
+feed = run_prf_with_relay(EXPIRED, NOW, 9 * 3600)
+check("a 9-hour-old relayed copy is recorded as a stale copy",
+      feed.pending == "stale copy", feed.pending)
+check("...and carries the age", round(feed.pending_hours or 0) == 9,
+      feed.pending_hours)
+check("...which reaches the snapshot",
+      feed.as_dict().get("pendingHours") == 9.0, feed.as_dict())
+
+feed = run_prf_with_relay(EXPIRED, NOW, 10 * 60)
+check("a fresh relayed copy with nothing in it is 'not published yet'",
+      feed.pending == "not published yet", feed.pending)
+
 # ---- the sentence a page shows -------------------------------------------
 #
 # Called through verdict() rather than grepped out of the source, so this fails
@@ -124,10 +167,11 @@ CTX_KEYS = ["incidents", "ni", "outfall_co", "outfall_name", "outfall_pos",
             "prf", "rain", "roi", "sepa", "southern", "spills"]
 
 
-def gaps_for(pending):
+def gaps_for(pending, hours=None):
     feed = m.Feed("NRW pollution risk forecast", covers=["Wales"])
     feed.ok = False
     feed.pending = pending
+    feed.pending_hours = hours
     ctx = {k: {} for k in CTX_KEYS}
     ctx["nearby"] = {}
     ctx["feeds"] = Feeds("NRW pollution risk forecast", feed)
@@ -147,6 +191,22 @@ check("a pending feed says the forecast is not published yet",
       "has not published today" in joined, joined[:120])
 check("...and does NOT blame a failed fetch",
       "could not be fetched" not in joined, joined[:120])
+check("...and still refuses to give a verdict",
+      r.get("level") == "unknown", r.get("level"))
+
+# THE CASE THAT ACTUALLY BIT. NRW published at 08:40 and the forecast was valid
+# for another twenty hours, but the relay served a copy older than that moment,
+# so the feed saw nothing current — and the page told 114 Welsh beaches the
+# regulator had not published. Saying a public body has not done something it
+# has done is the kind of claim this site exists not to make.
+r = gaps_for("stale copy", hours=9.0)
+joined = " ".join(r.get("gaps") or [])
+check("a stale relayed copy blames this site, not the regulator",
+      "limit of this site" in joined, joined[:150])
+check("...and does NOT say the regulator has not published",
+      "has not published" not in joined, joined[:150])
+check("...and says how old the copy is",
+      "9 hours old" in joined, joined[:150])
 check("...and still refuses to give a verdict",
       r.get("level") == "unknown", r.get("level"))
 

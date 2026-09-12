@@ -204,6 +204,8 @@ class Feed:
         # only the reason differs, and the reason is the whole value of saying
         # anything.
         self.pending = None
+        # How old the relayed copy was, when `pending` is "stale copy".
+        self.pending_hours = None
         self.at = None                  # freshest timestamp inside the data
         self.count = 0
         self.spilling = 0
@@ -223,6 +225,8 @@ class Feed:
             d["error"] = str(self.error)[:160]
         if self.pending:
             d["pending"] = self.pending
+            if self.pending_hours:
+                d["pendingHours"] = round(self.pending_hours, 1)
         if self.covers:
             d["covers"] = self.covers
         d["escalates"] = self.escalates
@@ -819,11 +823,13 @@ def prf(feed, url=None, prefix="E:"):
     """
     got = {}
     last_error = None
+    tried_urls = []
     for day_offset in (0, 1):
         date = (NOW - timedelta(days=day_offset)).strftime("%Y-%m-%d")
         feed.partial = None if day_offset == 0 else "using yesterday's forecast"
         page_url = (url or S.EA_PRF).format(date=date)
         page_url_used = page_url
+        tried_urls.append(page_url)
         items, guard = [], 0
         try:
             while page_url and guard < 10:
@@ -879,10 +885,32 @@ def prf(feed, url=None, prefix="E:"):
         # puts the affected beaches at "can't say" rather than quietly clear.
         raise last_error
     if not got:
-        # Both days answered and neither held a forecast still in date. Nothing
-        # is broken: today's has not been published yet. Recorded so the page
-        # can say that instead of blaming a fetch that worked.
-        feed.pending = "not published yet"
+        # NOT PUBLISHED YET, OR A COPY TOO OLD TO CONTAIN IT. Two different
+        # things, and yesterday's version of this called both the first one.
+        #
+        # environment.data.gov.uk refuses GitHub's ranges, so these documents
+        # come through the site's own relay, which serves a UK-side copy that
+        # only refreshes when somebody views the site from the UK. On a quiet
+        # morning that copy can be hours old — older than the moment NRW
+        # published. The feed then sees no current forecast and blamed the
+        # regulator for it: 114 Welsh beaches told their readers "Natural
+        # Resources Wales has not published today's forecast yet" while NRW had
+        # published it at 08:40 and it was valid for another twenty hours.
+        #
+        # Saying a regulator has not done something it has done is exactly the
+        # kind of claim this site exists not to make. The relay reports the age
+        # of what it served, so use it: an old copy is OUR gap to own, not
+        # theirs.
+        oldest = 0.0
+        for u in tried_urls:
+            got_age = RELAY_AGE.get(u)
+            if got_age:
+                oldest = max(oldest, got_age[0] / 3600.0)
+        if oldest > 2:
+            feed.pending = "stale copy"
+            feed.pending_hours = oldest
+        else:
+            feed.pending = "not published yet"
     return got
 
 
@@ -2102,7 +2130,20 @@ def verdict(site, ctx):
         # failed forecast elsewhere, not quietly ignored.
         feed = ctx["feeds"].get(FORECAST_FEED.get(country, ""))
         if not (feed and feed.ok):
-            if feed is not None and feed.pending:
+            if feed is not None and feed.pending == "stale copy":
+                # OUR COPY, NOT THEIR FAILURE. These documents reach this site
+                # through a relay that serves a UK-side copy, and that copy can
+                # be older than the moment the regulator published. Saying they
+                # have not published, when they have, would be a false claim
+                # about a public body — and the reader can do nothing with it
+                # either way, so the sentence says whose gap it actually is.
+                _auth = AUTHORITY.get(country, "the regulator")
+                gaps.append("This site is reading a copy of %s's data that is "
+                            "about %.0f hours old, so it cannot show today's "
+                            "pollution risk forecast. That is a limit of this "
+                            "site, not something %s has done"
+                            % (_auth, feed.pending_hours or 0, _auth))
+            elif feed is not None and feed.pending:
                 # Nothing is wrong. It is early, and the regulator has not
                 # posted today's forecast yet. Said plainly, with the reason,
                 # because "could not be fetched" reads as a broken site and
