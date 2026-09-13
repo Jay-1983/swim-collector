@@ -412,6 +412,37 @@ def class_history(sites):
     return got
 
 
+# SCOTLAND'S COUNCIL AREAS, because SEPA does not publish them.
+#
+# Every other country's feed carries a district, and 90 Scottish beach pages
+# read "Scotland · Coastal" with a breadcrumb of "All swimming spots › Scotland"
+# — no place smaller than the country, on a tenth of the site. SEPA's GeoJSON
+# has five fields and none of them is a council: bw_url, class_description,
+# description, objectid, year.
+#
+# So the council was derived from each beach's own coordinates against the ONS
+# Local Authority Districts (December 2024) Full Extent boundaries, which reach
+# past the coastline and therefore cover a point standing on a beach. Full
+# extent matters: the clipped version stops at the water and a third of these
+# would have fallen outside every polygon.
+#
+# STORED RATHER THAN FETCHED. It is derived once by tools/derive_scottish_councils.py
+# and committed, so building the register needs no live call to a service that
+# can be down, and so the answer cannot change under us without the change
+# showing up in a diff. Council boundaries move about once a decade.
+#
+# Spot-checked against real geography rather than trusted wholesale: Machrihanish
+# to Argyll and Bute, Millport to North Ayrshire, Coldingham to Scottish Borders,
+# Portobello to City of Edinburgh, Broughty Ferry to Dundee City.
+SCOTTISH_COUNCILS = {}
+try:
+    with io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "scottish_councils.json"), encoding="utf-8") as _f:
+        SCOTTISH_COUNCILS = json.load(_f)
+except Exception as _e:                                 # noqa: BLE001
+    print("    no Scottish council lookup: %s" % str(_e)[:80])
+
+
 def sites_scotland():
     d = fetch_json(S.SEPA_SITES)
     out = []
@@ -432,7 +463,10 @@ def sites_scotland():
             "cls": _tidy_class(p.get("class_description")),
             "clsYear": p.get("year"),
             "kind": "Coastal",
-            "district": None,
+            # None when a beach is new and not yet in the lookup — the page then
+            # reads exactly as it did before rather than inventing a council.
+            # check_scottish_districts below says how many that is.
+            "district": SCOTTISH_COUNCILS.get("S:" + _slug(name)),
             "rainRisk": False,
             "url": p.get("bw_url"),
         })
@@ -603,7 +637,7 @@ def add_regions(sites):
         s.pop("eaRegion", None)
 
 
-def add_slugs(sites):
+def add_slugs(sites, published="sites.json", key="sites"):
     """A stable, readable url for every beach.
 
     These become public page addresses, so they have to be unique and they must
@@ -611,8 +645,45 @@ def add_slugs(sites):
     every search result pointing at it. Collisions are resolved by appending the
     district, and only then by a number, so the common case stays clean.
     """
-    used = {}
+    # A PUBLISHED SLUG IS NEVER RECOMPUTED, only carried forward.
+    #
+    # The docstring above has always said slugs must not churn; nothing enforced
+    # it, and they had. _slug's handling of a curly apostrophe changed at some
+    # point, so rebuilding the register today would move five live pages —
+    # /beach/mother-ivey-s-bay/ to /beach/mother-iveys-bay/, and the same for
+    # Bournemouth Fisherman's Walk, Christchurch Friar's Cliff, Norman's Bay and
+    # St Margaret's Bay. All five are 200 on the old address and 404 on the new
+    # one. Nobody would have seen it happen; the register would simply have been
+    # written with different addresses and every inbound link to those beaches
+    # would have died.
+    #
+    # So the register that is already published is the authority for every site
+    # it names. Only a genuinely new bathing water gets a slug minted, and any
+    # future change to _slug can only ever affect beaches that did not exist
+    # when it changed.
+    existing = {}
+    try:
+        with io.open(os.path.join(OUT, published), encoding="utf-8") as f:
+            for x in json.load(f).get(key) or []:
+                if x.get("id") and x.get("slug"):
+                    existing[x["id"]] = x["slug"]
+    except Exception:                               # noqa: BLE001
+        pass                                        # first build, or a fresh OUT
+
+    used, kept = {}, 0
     for s in sites:
+        was = existing.get(s["id"])
+        if was and was not in used:
+            s["slug"] = was
+            used[was] = s["id"]
+            kept += 1
+        else:
+            s["slug"] = None
+
+    minted = []
+    for s in sites:
+        if s.get("slug"):
+            continue
         base = _slug(s["name"]) or "beach"
         slug = base
         if slug in used:
@@ -624,6 +695,11 @@ def add_slugs(sites):
             n += 1
         used[slug] = s["id"]
         s["slug"] = slug
+        minted.append(s["name"])
+    if existing:
+        print("    %-32s %d kept, %d new%s"
+              % ("Slugs", kept, len(minted),
+                 "" if not minted else ": " + ", ".join(minted[:6])))
 
 
 def _slug(s):
@@ -831,6 +907,19 @@ def main():
             "%s entirely. Run again, or pass --force if the loss is real."
             % (", ".join(lost), "them" if len(lost) > 1 else "it"))
 
+    # A NEW SCOTTISH BEACH ARRIVES WITHOUT A COUNCIL, and says so rather than
+    # sliding back to "Scotland" unnoticed. The lookup is derived once and
+    # committed (see SCOTTISH_COUNCILS); SEPA adds a bathing water perhaps once
+    # a year, and the fix is one command.
+    _scots = [x for x in sites if x.get("country") == "Scotland"]
+    _nodist = [x["name"] for x in _scots if not x.get("district")]
+    if _scots:
+        print("    %-32s %d of %d have a council area%s"
+              % ("Scottish districts", len(_scots) - len(_nodist), len(_scots),
+                 "" if not _nodist
+                 else " \u2014 MISSING: %s. Run "
+                      "tools/derive_scottish_councils.py" % ", ".join(_nodist[:6])))
+
     sites.sort(key=lambda s: (s["country"], s["name"]))
     add_regions(sites)
     add_slugs(sites)
@@ -854,7 +943,7 @@ def main():
     try:
         gone = sites_england_gone()
         if gone:
-            add_slugs(gone)
+            add_slugs(gone, "gone.json", "gone")
             places.add_nearby_towns(gone)
             write(os.path.join(OUT, "gone.json"), {
                 "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
