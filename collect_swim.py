@@ -2900,6 +2900,15 @@ def main():
     print("Rivers")
     rivers_snapshot = collect_rivers(feeds)
     rivers_body = None
+    # TOO FEW FRESH READINGS IS AN OUTAGE, NOT A SNAPSHOT. The site refuses a
+    # rivers payload under 800 reaches (422), and on 15 September the Agency's
+    # flood API returned 503s and stale readings, so every run sent 0 and was
+    # refused. Holding it back keeps the last good copy, which the page already
+    # labels with its age.
+    if rivers_snapshot and len(rivers_snapshot.get("rivers") or {}) < 800:
+        print("    %-32s only %d fresh, keeping the last published copy"
+              % ("River levels", len(rivers_snapshot.get("rivers") or {})))
+        rivers_snapshot = None
     if rivers_snapshot:
         rivers_body = json.dumps(rivers_snapshot, separators=(",", ":"),
                                  ensure_ascii=False)
@@ -3014,7 +3023,10 @@ def main():
                 continue
             try:
                 publish(payload, kind=kind)
-            except Exception as e:                  # noqa: BLE001
+            # SystemExit too: publish() gives up by raising SystemExit, which is
+            # not an Exception, so a refused rivers payload walked straight past
+            # this and skipped the week forecast and the brief every run.
+            except (Exception, SystemExit) as e:    # noqa: BLE001
                 print("    %s did not publish (%s) — carrying on so the warnings "
                       "still go out" % (label, str(e)[:120]))
         publish(brief_body, kind="brief")
