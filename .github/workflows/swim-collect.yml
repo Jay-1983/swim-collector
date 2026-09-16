@@ -45,7 +45,12 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # WRITE, only so the last step can commit the spill record. Nothing in KV is
+  # backed up: swim:hist: expires at 366 days, swim:month: at 400, and one lost
+  # namespace would take the whole discharge record with it and leave nothing to
+  # rebuild it from. Measured on 16 September 2026: all 24 months of rollups are
+  # 8,690 bytes, which is small enough to keep in git for ever.
+  contents: write
   # Lets this workflow ask GitHub for a short-lived signed token proving which
   # repository it is. The site verifies that signature instead of holding a
   # shared password, so there is no secret to store, rotate or leak.
@@ -78,6 +83,14 @@ jobs:
           python3 tests/test_sea_carry.py
           python3 tests/test_email.py
           python3 tests/test_feed_floors.py
+          # Both of these existed in tests/ and neither was run from here.
+          # test_prf_pending covers the forty-five minutes each morning when
+          # NRW has not published yet — "not published yet" against "could not
+          # be fetched", which is a claim about a public body. test_week_cells
+          # pins the week payload's cells to the union of both rainfall passes,
+          # the fault that cost 2,336 waterfalls their forecast.
+          python3 tests/test_prf_pending.py
+          python3 tests/test_week_cells.py
 
       - name: Install the push library
         run: python -m pip install --quiet "pywebpush==2.0.3"
@@ -121,8 +134,17 @@ jobs:
 
       # A run that stood down writes no snapshot, so the summary below would
       # report the previous one as if it were fresh. Skip it in that case.
+      #
+      # always(), NOT success(). main() returns 1 on purpose whenever the site
+      # published but the record behind it complained — a feed down, a payload
+      # held back, notifications not sent — and that made the step conditional
+      # on success() skip the summary on exactly the runs worth summarising.
+      # The feeds-down line below is the first thing to read on a red run, and
+      # it was only ever printed on green ones. The snapshot is written before
+      # any of those problems are raised, so hashFiles still tells a run that
+      # stood down from one that failed with a snapshot in hand.
       - name: Summarise this run
-        if: success() && hashFiles('.snapshot-local.json') != ''
+        if: always() && hashFiles('.snapshot-local.json') != ''
         run: |
           python3 - <<'PY'
           import json, os
@@ -140,3 +162,88 @@ jobs:
           bad = [k for k, v in d.get("feeds", {}).items() if not v.get("ok")]
           print("feeds down:", ", ".join(bad) if bad else "none")
           PY
+
+      # ---- the only copy of the spill record outside KV --------------------
+      #
+      # THE RECORD IS THE ONE THING ON THIS SITE NOBODY ELSE IS KEEPING, and it
+      # lived in exactly one place. The daily keys expire after 366 days and the
+      # monthly rollups after 400, so "how often has this beach spilled" is
+      # answered from a store with no copy anywhere: a deleted namespace, a
+      # renamed binding or a mistaken wrangler config and the history is gone
+      # with nothing to rebuild it from.
+      #
+      # Measured before writing this, on 16 September 2026:
+      #   /swim/data?months=24        8,690 bytes   all 24 months of rollups
+      #   /swim/data?history=1        270,905 bytes 784 runs over 19 days
+      # So the rollups are committed and the raw rows are not: about 14 KB a day
+      # in git for ever is not worth it when the rollup is what the record
+      # actually claims — which beach had a discharge on which day, plus the
+      # days nothing was watching.
+      #
+      # NOTHING PERSONAL IS IN IT, and that is checked rather than assumed: the
+      # export is beach ids, day numbers and verdict counts. Addresses live
+      # under swim:sub: and push endpoints under swim:push:, and no public
+      # endpoint will read either of those out — /swim/data cannot reach them.
+      # That is what makes a public repo the cheapest real backup there is: no
+      # new service, no API token, and this repo already exists.
+      #
+      # ONCE A DAY, decided from the file's own date rather than from the clock.
+      # This workflow asks every five minutes and GitHub drops most of the runs,
+      # so an hour-gated step would be skipped on exactly the days it mattered.
+      - name: Back up the spill record
+        if: success()
+        env:
+          SWIM_DATA_BASE: ${{ secrets.SWIM_DATA_BASE }}
+        run: |
+          set -eu
+          OUT=backup/spill-months.json
+          TODAY=$(date -u +%F)
+          if [ -f "$OUT" ] && grep -q "\"backedUp\": \"$TODAY\"" "$OUT"; then
+            echo "the record was already backed up today"
+            exit 0
+          fi
+          if [ -z "${SWIM_DATA_BASE:-}" ]; then
+            echo "no SWIM_DATA_BASE — nothing to back up from"
+            exit 0
+          fi
+          # -f is deliberately NOT used: curl prints the failing URL, and the
+          # base is a secret precisely so a public log does not carry it.
+          CODE=$(curl -sS -o months.json -w '%{http_code}' --max-time 60 \
+                 "$SWIM_DATA_BASE/data?months=24" || echo 000)
+          if [ "$CODE" != "200" ]; then
+            echo "the record endpoint answered $CODE — nothing committed"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import datetime, json, os
+          rec = json.load(open("months.json"))
+          # A FLOOR, FOR THE SAME REASON THE INGEST HAS ONE. A month whose KV
+          # read fails is skipped rather than reported, so a bad minute comes
+          # back as a smaller answer that is perfectly valid — and overwriting a
+          # good backup with it is the one way this step could destroy the thing
+          # it exists to protect. 328 beach entries on 16 September 2026, and
+          # the 24-month window can only ever drop one month of them at a time.
+          try:
+              had = int(json.load(open("backup/spill-months.json")).get("entries") or 0)
+          except Exception:                                 # noqa: BLE001
+              had = 0
+          have = int(rec.get("entries") or 0)
+          if have == 0 or have * 2 < had:
+              raise SystemExit("the record came back holding %d beach entries "
+                               "against %d already backed up — refusing to "
+                               "overwrite it" % (have, had))
+          rec["backedUp"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+          os.makedirs("backup", exist_ok=True)
+          with open("backup/spill-months.json", "w") as f:
+              json.dump(rec, f, indent=1, sort_keys=True)
+              f.write("\n")
+          PY
+          rm -f months.json
+          git config user.name "swim-collector"
+          git config user.email "noreply@caniswim.co.uk"
+          git add "$OUT"
+          git commit -m "Spill record backup $TODAY"
+          # A push that loses a race is worth one retry. If it still refuses the
+          # run turns red, which is the only alert channel this repo has — and
+          # once a day at most, not every five minutes.
+          git push || (git pull --rebase --autostash && git push)

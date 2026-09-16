@@ -60,6 +60,24 @@ def _enabled(base):
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
+def _subscribers(base, token):
+    """How many addresses are on the list. Counts only, never an address.
+
+    The site built this branch for exactly this and said so — "the collector
+    uses this to log how many people are being watched over, and that is all it
+    is", in the list=1 branch of functions/swim/email.js — and then nothing here
+    ever asked. swim_push.py has always logged its subscription count; this
+    half never did, which is why the log could not tell the two silences apart.
+    """
+    req = urllib.request.Request(base.rstrip("/") + "/email?list=1",
+                                 headers={"Authorization": "Bearer " + token,
+                                          "User-Agent": "swim-collector"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=CTX) as r:
+        body = json.loads(r.read().decode("utf-8", "replace") or "{}")
+    n = body.get("subscribers")
+    return n if isinstance(n, int) else None
+
+
 def run(previous_sites, current_sites, places, base_url=None, dry_run=False,
         test=False):
     """Returns a short summary for the run log. Never raises.
@@ -132,7 +150,24 @@ def run(previous_sites, current_sites, places, base_url=None, dry_run=False,
 
     if not r.get("ok"):
         return "email: the sender refused the run (%s)" % str(r.get("error"))[:120]
+
+    # HOW MANY PEOPLE ARE ACTUALLY ON THE LIST, the way swim_push.py has always
+    # ended its line. Without it "0 sent, 0 failed" reads identically whether
+    # nobody has ever signed up or the sending is quietly broken, and telling
+    # those two apart is the whole job of this line: on a channel that only ever
+    # carries warnings, silence is what a failure looks like. A count that could
+    # not be read says so rather than printing a zero it did not measure.
+    try:
+        subs = _subscribers(base, token)
+    except Exception:                                     # noqa: BLE001
+        subs = None
+    if subs is None:
+        who = "could not count the subscribers, so a silent run proves nothing"
+    elif subs == 0:
+        who = "0 subscribers — nothing to send, and nothing failing"
+    else:
+        who = "%d subscribers" % subs
     return ("email: %d newly warned, %d due after the daily cap, %d sent, "
-            "%d failed, %d over the per-run cap, %d owed and carried forward"
+            "%d failed, %d over the per-run cap, %d owed and carried forward, %s"
             % (len(fresh), r.get("due", 0), r.get("sent", 0), r.get("failed", 0),
-               r.get("skipped", 0), r.get("owed", 0)))
+               r.get("skipped", 0), r.get("owed", 0), who))

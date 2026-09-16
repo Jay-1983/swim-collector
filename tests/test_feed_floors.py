@@ -116,11 +116,34 @@ def test_zero_rows_is_not_a_healthy_answer():
     restriction is a real, healthy, everyday answer."""
     src = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "collect_swim.py"), encoding="utf-8").read()
-    for fn in ("restrictions_roi", "predictions_scotland", "ea_incidents"):
+    for fn in ("predictions_scotland", "ea_incidents"):
         b = src.split("def %s(" % fn)[1].split("\ndef ")[0]
         ok("%s floors on rows" % fn, "feed.ok = bool(rows)" in b,
            "found: " + repr([l.strip() for l in b.split("\n") if "feed.ok" in l]))
         ok("%s says why when empty" % fn, "feed.error" in b)
+
+    # THE REPUBLIC IS THE ONE EXCEPTION, AND `bool(rows)` WAS WRONG FOR IT.
+    #
+    # api.beaches.ie/api/beach/restricted/500 lists only the beaches that ARE
+    # restricted — 11 rows on 16 September 2026, every one of them with
+    # HasRestrictionInPlace true — so on an ordinary day out of season, with
+    # nothing restricted anywhere in the country, the feed answers an empty list
+    # and `bool(rows)` called that a failure. That took the tick off all 240
+    # Irish pages and put every one of them to "can't say" through the coverage
+    # gate in verdict(), reporting a fault when nothing was wrong.
+    #
+    # What the guard was really added for is an envelope or column rename
+    # producing nothing while the feed still reported healthy, so the test is
+    # whether the envelope was UNDERSTOOD: a bare list, or one of the three
+    # wrappers the parser guesses at. fetch_json() raises on a bad status and on
+    # unparseable JSON, so an unrecognised shape is the only silent failure left
+    # and it is the one this checks.
+    b = src.split("def restrictions_roi(")[1].split("\ndef ")[0]
+    ok("restrictions_roi floors on the envelope, not the row count",
+       "feed.ok = read" in b and "isinstance(d, list)" in b,
+       "found: " + repr([l.strip() for l in b.split("\n") if "feed.ok" in l]))
+    ok("restrictions_roi does not floor on rows", "feed.ok = bool(rows)" not in b)
+    ok("restrictions_roi says why when the envelope is unreadable", "feed.error" in b)
 
 
 def test_sepa_is_dated_and_age_checked():

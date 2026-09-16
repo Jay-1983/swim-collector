@@ -857,8 +857,18 @@ def prf(feed, url=None, prefix="E:"):
             if not site:
                 continue
             sid = prefix + str(site).rstrip("/").split("/")[-1]
-            pub = parse_iso(it.get("publishedAt")) or parse_iso(it.get("predictedAt"))
-            expires = parse_iso(it.get("expiresAt"))
+            # UK LOCAL TIME, NOT UTC. All three arrive naive — "2026-09-16T08:41:07",
+            # no Z, no offset — and the Environment Agency means the wall clock by
+            # that. Proved from our own two halves on 16 September: the larder held
+            # the populated document at 07:53Z and the feed's `at` in the published
+            # snapshot read 07:53:03Z, while all 451 records inside it claimed to
+            # have been published at 08:41:07 — 48 minutes AFTER we fetched them.
+            # Read as UTC the issue time is an hour late on all 466 English and
+            # Welsh pages, and expiresAt runs an hour long, so a forecast that
+            # lapsed at 08:29 local is still served as today's answer until 09:29.
+            pub = (parse_iso(it.get("publishedAt"), assume_local=True)
+                   or parse_iso(it.get("predictedAt"), assume_local=True))
+            expires = parse_iso(it.get("expiresAt"), assume_local=True)
             prev = best.get(sid)
             # Keep the latest PUBLISHED forecast. An undated record must never
             # displace a dated one, or the withdrawn warning wins by luck.
@@ -1070,13 +1080,28 @@ def restrictions_roi(feed):
     # publishes no storm overflow data, so there is no second signal to catch a
     # silent failure.
     #
-    # `rows` is the test rather than `got`: the EPA answering with a populated
-    # list of beaches that all have HasRestrictionInPlace false is a real,
-    # healthy, common answer, and it correctly yields no restrictions. An
-    # envelope this code could not read at all is not.
-    feed.ok = bool(rows)
-    if not rows:
-        feed.error = "the restrictions feed parsed to no rows at all"
+    # THE ENVELOPE IS THE TEST, NOT THE NUMBER OF ROWS IN IT.
+    #
+    # `bool(rows)` was the first attempt at that, and it is wrong in the other
+    # direction: api.beaches.ie/api/beach/restricted/500 lists ONLY the
+    # restricted beaches — read on 16 September it answered 11 rows, every one
+    # of them HasRestrictionInPlace true — so on a day when Ireland has nothing
+    # restricted at all, which is the ordinary state out of season, the feed
+    # fails. That takes the tick off all 240 Irish pages, puts every one of
+    # them to "can't say" through the coverage gate in verdict(), and reports a
+    # fault when nothing whatever is wrong. The HasRestrictionInPlace false
+    # rows the loop above skips are a shape this endpoint does not send.
+    #
+    # So the test is whether the envelope was UNDERSTOOD, which is the failure
+    # the guard was added for: a list, or one of the three wrappers guessed at
+    # above, is a readable answer; anything else is not. fetch_json() raises on
+    # a bad status and on unparseable JSON, so reaching this line at all means
+    # the EPA answered something.
+    read = isinstance(d, list) or (isinstance(d, dict) and any(
+        isinstance(d.get(k), list) for k in ("value", "items", "data")))
+    feed.ok = read
+    if not read:
+        feed.error = "the restrictions feed came back in a shape this code cannot read"
     return got
 
 
@@ -1834,7 +1859,16 @@ def verdict(site, ctx):
         # before. Standard 3: date everything, including a tick.
         fed = ctx["feeds"].get(FORECAST_FEED.get(country) or "")
         stale_prf = bool(fed and fed.partial and "yesterday" in fed.partial)
-        checked.append("Yesterday's official pollution forecast, today's not published yet"
+        # AND WE DO NOT KNOW THAT THEY HAVE NOT PUBLISHED IT. All this branch
+        # knows is that today's document, as the relay served it, held nothing —
+        # and that copy only refreshes when someone views the site from the UK:
+        # the nine documents in the larder this morning were 56, 56, 101, 102,
+        # 102, 342, 377, 701 and 702 minutes old. prf() stopped blaming the
+        # regulator for our own lag when it could measure it (pending "stale
+        # copy"), after 114 Welsh pages said NRW had not published a forecast it
+        # had published at 08:40. This tick was the last place still saying it.
+        checked.append("Yesterday's official pollution forecast — today's is not in "
+                       "the copy this site can read"
                        if stale_prf else "Today's official pollution forecast")
         comment = (p.get("comment") or "").lower()
         if any(w in comment for w in AVOID_WORDS):
@@ -1873,8 +1907,21 @@ def verdict(site, ctx):
                     "text": "This bathing water is suspended (%s)" % inc["suspension"]["why"],
                     "at": inc["suspension"]["at"]})
 
+    # NOT "TODAY'S": THIS FEED CARRIES NO DATE ANYWHERE IN IT.
+    #
+    # Every other tick on the site is dated by the document behind it. prf()
+    # has expiresAt and rewords itself to "Yesterday's official pollution
+    # forecast, today's not published yet"; SEPA's rows carry last_updated and
+    # earn a 30-hour stale_check. The EPA's restricted list has no publication
+    # time in it at all, so restrictions_roi() sets no feed.at — in this
+    # morning's snapshot "Ireland restrictions" is the one escalating feed with
+    # no `at` beside it — and stale_check(), which fails any feed it cannot
+    # date, is never called on it. A register frozen upstream would look
+    # exactly like a live one, and this tick is the ENTIRE checklist for 225 of
+    # the 240 Irish beaches. So it claims only what it can stand behind: the
+    # register was read, not that today's edition was published.
     if country == "Ireland" and ctx["feeds"]["Ireland restrictions"].ok:
-        checked.append("Today's local authority bathing restrictions")
+        checked.append("The EPA's register of local authority bathing restrictions")
     r = ctx["roi"].get(sid)
     if r:
         text = r.get("type") or "Bathing restriction in force"
@@ -1927,7 +1974,16 @@ def verdict(site, ctx):
             # not having spoken. An unrecognised wording lands here too: a
             # string this code has never seen is not evidence that the water
             # is fine.
-            gaps.append("SEPA has not issued today's prediction for this beach yet")
+            # NOT "YET" ONCE THE SEASON HAS ENDED. Out of season this sits on the
+            # same card as "Out of bathing season — daily forecasts and sampling
+            # stop until the summer", which says nothing more is coming today, so
+            # the two lines contradicted each other. Live on 16 September, the day
+            # after Scotland's season closed: SEPA still listed 30 beaches, 29 with
+            # a forecast and Kinghorn Harbour Beach at "-", and that one page
+            # carried both sentences. The season gap already covers it, and the
+            # verdict is unknown either way.
+            if in_season(country):
+                gaps.append("SEPA has not issued today's prediction for this beach yet")
     elif country == "Scotland" and ctx["feeds"]["SEPA daily prediction"].ok:
         # Only claim SEPA does not cover this beach when we actually reached
         # SEPA. If their feed is down, the gate below reports that instead.
@@ -2527,7 +2583,15 @@ def already_fresh(minutes):
         if not at:
             return False
         age = (NOW - at).total_seconds() / 60.0
-        if age < minutes:
+        # A SNAPSHOT STAMPED IN THE FUTURE IS NOT EVIDENCE THE WORK IS DONE.
+        # /swim/ingest deliberately accepts an `at` up to 30 minutes ahead of the
+        # edge clock because runner clocks drift, and a negative age sailed
+        # through this test — it printed "published snapshot is -29 minutes old —
+        # nothing to do" — so one fast-clocked runner could stand every other run
+        # down for its skew plus these 20 minutes. The rule in this docstring is
+        # that a missed run is worse than a wasted one, so anything stamped ahead
+        # of now collects.
+        if 0 <= age < minutes:
             print("published snapshot is %.0f minutes old — nothing to do" % age)
             return True
         print("published snapshot is %.0f minutes old — collecting" % age)
@@ -2833,7 +2897,24 @@ def main():
         picks = [w for w in (rec.get("why") or []) if w.get("text")]
         if rec["v"] in ("avoid", "advised"):
             picks = [w for w in picks if w.get("t") != "clear"] or picks
-        picks.sort(key=lambda w: ORDER.get(w.get("t"), 8))
+        # AND LAST SEASON'S RATING IS NOT TODAY'S SEWAGE.
+        #
+        # The Poor-classification advisory is emitted as type "advised", the
+        # same type as the regulator's daily warning, so it ranked 1 — above a
+        # storm overflow discharging RIGHT NOW at 2. Wharfe at Cromwheel,
+        # Ilkley went out this morning as "Do not swim" with the reason "Rated
+        # Poor for 2025, so advice against bathing is in place here for the
+        # season" while its own why list carried "1 storm overflow discharging
+        # within 2km right now". Four beaches read that way, one of them at
+        # avoid.
+        #
+        # It is still an advisory and still belongs above the forecast, so it
+        # sits at 3.5: under both spill ranks, over "forecast" at 4. Matched on
+        # the text, which is the same test the site's own WHY_MEANS uses to
+        # tell this advisory from the other three ways into the band.
+        picks.sort(key=lambda w: (3.5 if (w.get("t") == "advised"
+                                          and "for the season" in (w.get("text") or "").lower())
+                                  else ORDER.get(w.get("t"), 8)))
         why = picks[0]["text"] if picks else ""
         # A THIRD ELEMENT, FOR THE BEACHES THAT HAVE NO REASON TO GIVE.
         #
@@ -3003,6 +3084,22 @@ def main():
     elif prev.get("cells"):
         print("    %-32s last copy is %.0fh old, not carried" % ("Week ahead", prev_age_h))
     cells.update(fresh_cells)
+    # AND THE UNION IS CHECKED AT KEY LEVEL, not merely counted.
+    #
+    # The floor below counts cells, and a count cannot tell 540 beach cells
+    # from 935 waterfall ones: the fault fixed on 16 September replaced a
+    # 1,387-cell payload with a 540-cell one, and a same-size swap of one
+    # population for the other would sail through the floor untouched. This
+    # names the keys instead. Anything the last published copy had and this one
+    # does not — while that copy was young enough to carry, which is the same
+    # condition used to carry it — is the regression itself.
+    if prev.get("cells") and (prev_age_h is None or prev_age_h <= 18):
+        lost = set(prev["cells"]) - set(cells)
+        if lost:
+            print("    %-32s %d cells already published are missing from this copy"
+                  % ("Week ahead", len(lost)))
+            PUBLISH_PROBLEMS.append("week ahead lost %d cells that were already "
+                                    "published" % len(lost))
     # THE WEEK OF RAIN BEHIND, alongside the week ahead. Carried forward with
     # the same rule as the forecast: an old set of daily totals is still the
     # right shape and is dated by pastDays, so a run that could not reach

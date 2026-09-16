@@ -45,21 +45,53 @@ def names_in(node):
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
 
-# cells / rain_past: built by a dict comprehension over DAILY, not beach_daily.
-for var in ("cells", "rain_past"):
-    comps = [a for a in assigns_to(var)
-             if any(isinstance(n, ast.DictComp) for n in ast.walk(a))]
-    check("%s is built by a comprehension" % var, bool(comps))
-    if not comps:
-        continue
-    iters = set()
-    for a in comps:
-        for dc in (n for n in ast.walk(a) if isinstance(n, ast.DictComp)):
-            for gen in dc.generators:
-                iters |= names_in(gen.iter)
-    check("%s iterates DAILY (both passes)" % var, "DAILY" in iters)
-    check("%s does not iterate beach_daily only" % var,
-          "beach_daily" not in iters)
+def updates_of(target):
+    """Every `target.update(...)` call in the file."""
+    return [n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "update" and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == target]
+
+
+def comps_in(node):
+    return [n for n in ast.walk(node) if isinstance(n, ast.DictComp)]
+
+
+def iters_of(comps):
+    out = set()
+    for dc in comps:
+        for gen in dc.generators:
+            out |= names_in(gen.iter)
+    return out
+
+
+# FOLLOW WHAT FEEDS THE NAME, NOT THE SHAPE IT HAPPENS TO HAVE.
+#
+# The first version of this insisted `cells` itself was a dict comprehension.
+# The 16 September fix — merge the previously published copy in, then this
+# run's own cells over the top — replaced that comprehension with
+# `fresh_cells = {...}` plus two `cells.update(...)` calls, so the test failed
+# on correct code. A guard that cries wolf on a fix is a guard that gets left
+# out of the workflow, which is exactly where this one was found.
+fresh = [a for a in assigns_to("fresh_cells") if comps_in(a)]
+check("this run's cells come from a comprehension", bool(fresh))
+f_iters = iters_of([c for a in fresh for c in comps_in(a)])
+check("they iterate DAILY (both passes)", "DAILY" in f_iters)
+check("they do not iterate beach_daily", "beach_daily" not in f_iters)
+check("and they are merged into cells, not swapped for it",
+      any(any(isinstance(a, ast.Name) and a.id == "fresh_cells" for a in n.args)
+          for n in updates_of("cells")))
+check("the previously published cells are carried in too",
+      any("prev" in names_in(n) for n in updates_of("cells")))
+
+# rain_past: same rule, and it is merged the same way.
+rp = [c for n in updates_of("rain_past") for a in n.args for c in comps_in(a)]
+check("rain_past is fed by a comprehension", bool(rp))
+rp_iters = iters_of(rp)
+check("rain_past iterates DAILY (both passes)", "DAILY" in rp_iters)
+check("rain_past does not iterate beach_daily", "beach_daily" not in rp_iters)
+check("the previously published rainPast is carried in too",
+      any("prev" in names_in(n) for n in updates_of("rain_past")))
 
 # days / past_days: accumulated from beach_daily, so the column labels come
 # from one pass on one clock.
