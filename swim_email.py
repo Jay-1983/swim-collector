@@ -101,8 +101,16 @@ def run(previous_sites, current_sites, places, base_url=None, dry_run=False,
             return "email TEST: could not reach the sender (%s)" % str(e)[:120]
         if not r.get("ok"):
             return "email TEST: refused (%s)" % str(r.get("error"))[:120]
-        return ("email TEST: %d sent, %d failed, %d subscribers"
-                % (r.get("sent", 0), r.get("failed", 0), r.get("subscribers", 0)))
+        # PER INBOX, BY DOMAIN. "2 sent" hid that Gmail received the test and
+        # Yahoo did not (16 September): a message Cloudflare only QUEUED counts
+        # as sent. The site returns the domain and the status for each inbox and
+        # never the address, which matters here — this repo is public.
+        per = "; ".join("%s %s%s" % (x.get("domain") or "?", x.get("status") or "?",
+                                     (" " + x["code"]) if x.get("code") else "")
+                        for x in (r.get("results") or []))
+        return ("email TEST: %d sent, %d failed, %d subscribers%s"
+                % (r.get("sent", 0), r.get("failed", 0), r.get("subscribers", 0),
+                   (" | " + per) if per else ""))
 
     fresh = newly_warned(previous_sites, current_sites)
     # EVERY WARNED BEACH, not just the new ones. The other end needs this to
