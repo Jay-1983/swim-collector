@@ -3024,17 +3024,32 @@ def main():
         past_days = prev.get("pastDays") or []
     if not days:
         days = prev.get("days") or []
-    # A SHORT CELL MAP IS AN OUTAGE TOO. Beaches occupy 540 of the 0.1-degree
-    # cells and the waterfalls 935, so a healthy payload carries about 1,387.
-    # The site's floor was 300, which accepted a copy missing most of the
-    # country — and did, every run, for weeks. Under a thousand, keep the last
-    # published copy rather than replacing a good one with a partial.
-    if cells and len(cells) < 1000:
-        print("    %-32s only %d cells, keeping the last published copy"
-              % ("Week ahead", len(cells)))
-        PUBLISH_PROBLEMS.append("week ahead held back: only %d cells of about 1,387"
-                                % len(cells))
+    # NEVER SHRINK WHAT IS PUBLISHED. Beaches occupy 540 of the 0.1-degree
+    # cells and the waterfalls 935, so a healthy payload carries about 1,387 —
+    # but a run that legitimately has only one pass fresh, with nothing carried
+    # because the store is new or too old, holds 540 and that is still 540 more
+    # than nothing. The fault worth stopping is a REGRESSION: replacing a full
+    # copy with a partial one, which is what happened every run for weeks. So
+    # the test is against what is already up there, not against a round number,
+    # and a first short copy publishes rather than leaving the pages blank.
+    prev_cells = len(prev.get("cells") or {})
+    if cells and prev_cells and len(cells) < prev_cells:
+        print("    %-32s %d cells would replace %d already published, keeping those"
+              % ("Week ahead", len(cells), prev_cells))
+        PUBLISH_PROBLEMS.append("week ahead held back: %d cells would have replaced %d"
+                                % (len(cells), prev_cells))
         cells = {}
+    elif cells and len(cells) < 300:
+        print("    %-32s only %d cells, too few to be a forecast" % ("Week ahead", len(cells)))
+        PUBLISH_PROBLEMS.append("week ahead held back: only %d cells" % len(cells))
+        cells = {}
+    elif cells and len(cells) < 1000:
+        # Said out loud but NOT a run problem: this is the hour after a restart
+        # or a long gap, and the other pass fills it within its own six-hour
+        # refresh. A red run every thirty minutes for something that fixes
+        # itself teaches Jay to ignore the red.
+        print("    %-32s %d cells — one pass only, the other fills within six hours"
+              % ("Week ahead", len(cells)))
     sea_now = sea if sea else (prev.get("sea") or {})
     sea_stamp = ((sea_at or NOW).strftime("%Y-%m-%dT%H:%M:%SZ") if sea
                  else prev.get("seaAt"))
