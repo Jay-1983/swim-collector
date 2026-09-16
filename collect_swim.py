@@ -2028,6 +2028,19 @@ def verdict(site, ctx):
     if resolved:
         checked.append("%d monitored storm overflow%s within %.0fkm"
                        % (resolved, "" if resolved == 1 else "s", AFFECT_KM))
+        # AND IT SAYS SO IN THE REASONS, not only in the checklist. 82 beaches —
+        # 71 Welsh, 11 English — have no daily pollution forecast published for
+        # them, so the overflow check is the only thing standing behind their
+        # green tick, and it appeared nowhere in `why`. The page therefore read
+        # "No warnings today" followed by nothing but "Natural Resources Wales
+        # does not publish a daily pollution risk forecast for this beach", and
+        # the map popups, which have room for one line, read "Not checked".
+        # A green tick that cannot say what it looked at is worthless — this is
+        # the same shape as the forecast's own "No pollution warnings in force".
+        if not now_list and not recent_list and not blind:
+            why.append({"t": "clear", "s": "Water company",
+                        "text": "No monitored storm overflow discharging within %.0fkm"
+                                % AFFECT_KM})
 
     if now_list:
         level = raise_to("avoid")
@@ -2908,6 +2921,8 @@ def main():
     if rivers_snapshot and len(rivers_snapshot.get("rivers") or {}) < 800:
         print("    %-32s only %d fresh, keeping the last published copy"
               % ("River levels", len(rivers_snapshot.get("rivers") or {})))
+        PUBLISH_PROBLEMS.append("river levels held back: only %d of 1,910 gauges were fresh"
+                                % len(rivers_snapshot.get("rivers") or {}))
         rivers_snapshot = None
     if rivers_snapshot:
         rivers_body = json.dumps(rivers_snapshot, separators=(",", ":"),
@@ -2916,6 +2931,17 @@ def main():
     print("Waterfalls")
     falls_snapshot = collect_waterfalls(feeds)
     falls_body = None
+    # THE SAME HOLD-BACK THE RIVERS HAVE. The register holds 2,521 waterfalls
+    # and the site's floor for this payload was 200 — eight per cent — so a
+    # rainfall outage that left a few hundred could replace a full copy with a
+    # near-empty one and be accepted. A short copy is an outage; the last good
+    # one, which the page dates for the reader, is better than a gap.
+    if falls_snapshot and len(falls_snapshot.get("falls") or {}) < 2000:
+        print("    %-32s only %d of 2,521, keeping the last published copy"
+              % ("Waterfall flow", len(falls_snapshot.get("falls") or {})))
+        PUBLISH_PROBLEMS.append("waterfall flow held back: only %d of 2,521 waterfalls"
+                                % len(falls_snapshot.get("falls") or {}))
+        falls_snapshot = None
     if falls_snapshot:
         falls_body = json.dumps(falls_snapshot, separators=(",", ":"), ensure_ascii=False)
         io.open(os.path.join(OUT, LOCAL_FALLS), "w", encoding="utf-8").write(falls_body)
@@ -2950,22 +2976,65 @@ def main():
     # the same thing whichever pass filled it — it was `days` and `pastDays`,
     # single arrays taken from whichever pass happened to be longest. Those come
     # from the beach pass; the cells are the union.
-    cells = ({k: v["w"] for k, v in DAILY.items()} if DAILY
-             else (prev.get("cells") or {}))
+    # MERGED, NOT REPLACED. `prev` was consulted only when DAILY was entirely
+    # empty, and DAILY holds cells for the pass that actually FETCHED this run:
+    # rainfall() returns early when its copy is still fresh (three hours for the
+    # beaches, six for the waterfalls), before the loop that fills DAILY. The
+    # two gates are out of phase, so almost every run had one pass or the other,
+    # never both — and a 540-cell beach map overwrote the 935-cell waterfall map
+    # wholesale. Measured on 16 September: 1,288 of the 2,521 waterfalls were
+    # telling readers "there is no forecast grid point near enough to this
+    # place" about a cell that had been published four runs earlier, and half an
+    # hour later 158 beaches lost theirs instead. Both floors passed, so every
+    # run was green. The block's own rule above — whichever half is fresh is
+    # combined with what the store holds for the other — is what this now does,
+    # the way days, pastDays, sea and rainPast already did.
+    fresh_cells = {k: v["w"] for k, v in DAILY.items()}
+    cells = {}
+    # A CARRIED CELL IS A WEEK DATED BY `days`, so it may only be carried while
+    # the copy it came from still belongs to the same run of days. Yesterday's
+    # seven-day forecast under today's labels would be off by a day, which is
+    # the fault this whole payload exists to avoid, so anything older than
+    # eighteen hours is dropped rather than relabelled.
+    prev_at = parse_iso(prev.get("at")) if prev.get("at") else None
+    prev_age_h = hours_since(prev_at) if prev_at else None
+    if prev.get("cells") and (prev_age_h is None or prev_age_h <= 18):
+        cells.update(prev["cells"])
+    elif prev.get("cells"):
+        print("    %-32s last copy is %.0fh old, not carried" % ("Week ahead", prev_age_h))
+    cells.update(fresh_cells)
     # THE WEEK OF RAIN BEHIND, alongside the week ahead. Carried forward with
     # the same rule as the forecast: an old set of daily totals is still the
     # right shape and is dated by pastDays, so a run that could not reach
     # Open-Meteo shows last run's week rather than an empty chart.
-    rain_past = {k: v["pr"] for k, v in DAILY.items() if v.get("pr")}
+    rain_past = {}
+    if prev.get("rainPast") and (prev_age_h is None or prev_age_h <= 18):
+        rain_past.update(prev["rainPast"])
+    rain_past.update({k: v["pr"] for k, v in DAILY.items() if v.get("pr")})
     past_days = []
     for v in beach_daily.values():
         if len(v.get("pd") or []) > len(past_days):
             past_days = v["pd"]
-    if not rain_past:
-        rain_past = prev.get("rainPast") or {}
+    # PAST DAYS CARRIED ON ITS OWN. It comes from the beach pass, and rain_past
+    # now comes from both, so the old `if not rain_past` fallback stopped firing
+    # on any run where the waterfall pass was the fresh one — and that published
+    # a week of rain-behind totals with no day labels against them. The log said
+    # "935 cells over 0 days behind" on exactly those runs.
+    if not past_days:
         past_days = prev.get("pastDays") or []
     if not days:
         days = prev.get("days") or []
+    # A SHORT CELL MAP IS AN OUTAGE TOO. Beaches occupy 540 of the 0.1-degree
+    # cells and the waterfalls 935, so a healthy payload carries about 1,387.
+    # The site's floor was 300, which accepted a copy missing most of the
+    # country — and did, every run, for weeks. Under a thousand, keep the last
+    # published copy rather than replacing a good one with a partial.
+    if cells and len(cells) < 1000:
+        print("    %-32s only %d cells, keeping the last published copy"
+              % ("Week ahead", len(cells)))
+        PUBLISH_PROBLEMS.append("week ahead held back: only %d cells of about 1,387"
+                                % len(cells))
+        cells = {}
     sea_now = sea if sea else (prev.get("sea") or {})
     sea_stamp = ((sea_at or NOW).strftime("%Y-%m-%dT%H:%M:%SZ") if sea
                  else prev.get("seaAt"))
@@ -3016,9 +3085,16 @@ def main():
         # A secondary publish failing is worth reporting and worth continuing
         # past. The site shows a stale forecast; nobody misses a warning.
         publish(body)
+        # THE BRIEF IS IN HERE TOO. It was the one call left outside the guard,
+        # on the line after it, and it is the payload the edge injects into
+        # every beach page — so a refused brief still threw past the
+        # notification block and cancelled that round of warnings, which is the
+        # exact fault this loop was written for. Published last, so the readings
+        # it summarises are already in place.
         for label, payload, kind in (("waterfall flow", falls_body, "falls"),
                                      ("river levels", rivers_body, "rivers"),
-                                     ("week forecast", week_body, "week")):
+                                     ("week forecast", week_body, "week"),
+                                     ("beach brief", brief_body, "brief")):
             if not payload:
                 continue
             try:
@@ -3029,7 +3105,11 @@ def main():
             except (Exception, SystemExit) as e:    # noqa: BLE001
                 print("    %s did not publish (%s) — carrying on so the warnings "
                       "still go out" % (label, str(e)[:120]))
-        publish(brief_body, kind="brief")
+                # AND IT TURNS THE RUN RED. Printing it put the words in a log
+                # nobody reads: a refused payload left the site showing a stale
+                # forecast on a green run. PUBLISH_PROBLEMS is raised by main()
+                # once everything else is published.
+                PUBLISH_PROBLEMS.append("%s did not publish: %s" % (label, str(e)[:120]))
 
         # Tell anybody who asked to be told. After publishing, so a beach named
         # in a notification is already showing the warning when they tap it —
@@ -3170,6 +3250,13 @@ def publish(body, kind=None):
             # one word this test used to allow.
             if res.get("rollup") == "failed":
                 PUBLISH_PROBLEMS.append("the monthly rollup did not record")
+            # The readings publish writes the brief the edge injects into every
+            # beach page as a side effect, and says so in this field. It has
+            # been able to answer "failed" since it was written and nothing read
+            # it, so the one copy of the verdict that reaches a crawler or a
+            # reader with no JavaScript could go stale on a green run.
+            if res.get("brief") == "failed":
+                PUBLISH_PROBLEMS.append("the brief injected into every beach page did not write")
             return
         except SystemExit:
             raise
