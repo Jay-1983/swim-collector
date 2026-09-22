@@ -153,6 +153,9 @@ def uk_offset(d):
 
 # Bathing seasons. Outside these dates the daily forecasts stop being published
 # altogether, and a beach with no warning is not a beach that has been checked.
+MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December")
+
 SEASONS = {
     "England": ((5, 15), (9, 30)),
     "Wales": ((5, 15), (9, 30)),
@@ -211,6 +214,37 @@ class Feed:
         self.spilling = 0
         self.offline = 0
 
+    def offseason(self, when=None):
+        """The end of the season is not a fault, and must not be reported as one.
+
+        SEPA stops issuing daily predictions on 15 September and starts again
+        on 1 June; the Environment Agency and Natural Resources Wales stop on
+        30 September. A feed that has simply stopped for the winter goes stale,
+        and the staleness checks in here then report it as unreadable — so from
+        16 September this site put "SEPA daily prediction (Scotland) could not
+        be read" in an amber box at the top of EVERY page, English and Irish
+        ones included, which reads as the site being broken rather than as the
+        season being over. England and Wales reach the same cliff on 1 October.
+
+        A feed is off-season only when EVERY country it covers is out of
+        season: the EA forecast covers England and Wales, and one of them being
+        finished is not the same thing as the feed being finished.
+        """
+        if not self.covers:
+            return None
+        if any(in_season(c, when) for c in self.covers):
+            return None
+        ends, starts = [], []
+        for c in self.covers:
+            s = SEASONS.get(c)
+            if not s:
+                return None
+            ends.append(s[1])
+            starts.append(s[0])
+        end, start = max(ends), min(starts)
+        return {"ended": "%d %s" % (end[1], MONTHS[end[0] - 1]),
+                "resumes": "%d %s" % (start[1], MONTHS[start[0] - 1])}
+
     def as_dict(self):
         d = {"ok": self.ok, "count": self.count}
         if self.at:
@@ -229,7 +263,15 @@ class Feed:
                 d["pendingHours"] = round(self.pending_hours, 1)
         if self.covers:
             d["covers"] = self.covers
-        d["escalates"] = self.escalates
+        # Out of season and not answering is the expected state, published as
+        # that rather than as a failure: the site then says what it means
+        # instead of putting an amber warning on every page in the country.
+        off = self.offseason() if not self.ok else None
+        if off:
+            d["offseason"] = off
+        # An off-season feed cannot escalate: nothing is being withheld from
+        # anybody, the season is over.
+        d["escalates"] = False if off else self.escalates
         return d
 
 
