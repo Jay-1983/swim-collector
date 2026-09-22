@@ -165,6 +165,19 @@ SEASONS = {
 }
 
 
+def hours_words(hours):
+    """An age in hours, as English. "1 hours old" was on the live site.
+
+    Rounded the way the sentence reads it: under an hour and a half is "an
+    hour", because "from a copy 1 hours old" is the kind of seam that makes a
+    reader trust the rest of the page less.
+    """
+    n = int(round(hours))
+    if n <= 1:
+        return "about an hour"
+    return "%d hours" % n
+
+
 def in_season(country, when=None):
     when = when or NOW
     s = SEASONS.get(country)
@@ -836,15 +849,15 @@ def note_relay_age(feed, url, stale_hours=20):
     hours = seconds / 3600.0
     if hours > stale_hours:
         feed.ok = False
-        feed.error = ("the UK-side copy is %.0f hours old — it refreshes when the "
-                      "site is viewed from the UK" % hours)
+        feed.error = ("the UK-side copy is %s old — it refreshes when the "
+                      "site is viewed from the UK" % hours_words(hours))
     elif hours > 1:
         # DO NOT CLOBBER A PARTIAL THAT MEANS SOMETHING ELSE. prf() records
         # "using yesterday's forecast" here, and this overwrote it — which is
         # exactly what the beach checklist reads to decide whether to say
         # "Today's official pollution forecast" or yesterday's. The relay age
         # and the forecast day are two different facts about the same document.
-        age_note = "from a copy %.0f hours old" % hours
+        age_note = "from a copy %s old" % hours_words(hours)
         feed.partial = (feed.partial + ", " + age_note) if feed.partial else age_note
 
 
