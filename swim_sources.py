@@ -259,3 +259,65 @@ IMI_TIDE = ("https://erddap.marine.ie/erddap/tabledap/imiTidePredictionEpa.json"
             "&time%3E={start}&time%3C={end}")
 IMI_TIDE_ATTRIB = "Tide predictions for Ireland by the Marine Institute, CC BY 4.0"
 IMI_TIDE_MAX_KM = 5.0
+
+
+# MEASURED sea temperature from the Cefas WaveNet wave-rider buoys, Open
+# Government Licence v3.0.
+#
+# WHICH ENDPOINT, AND WHY IT MATTERS. Use the Cefas Data Hub recordset below,
+# NOT wavenet-api.cefas.co.uk. That other endpoint returns a per-site usage
+# string saying both "Open Government Licence" AND "No re-use without prior
+# agreement", and the licence document it points at answers 401, so it cannot be
+# resolved by reading it. Cefas settled it by email on 24 September 2026 (Oliver
+# Williams, Senior Marine Data Manager): use this feed, which carries
+# "Public data - no limitations to reuse" and OGL v3.0 in its own metadata, and
+# cite the DOI. Do not go back to the other one.
+# THE CSV EXPORT, NOT THE PAGED JSON.
+#
+# The feed holds 48 hours for every buoy and every parameter and has no working
+# filter: `filters=`, `filter=` and a bare `Parameter=` are all accepted and
+# quietly ignored. The paged JSON LOOKS chronological — page one opens on the
+# oldest row — so the first version of this asked for the last page only, 62KB
+# instead of 1.7MB. Then the CSV export of the same recordset came back ordered
+# by deployment instead, with a day-old row at the top. Nothing documents an
+# order, so there is no last page to rely on: a buoy could silently drop off
+# this site because its rows happened to sit mid-file. The whole export is
+# 762KB, less than half the JSON, and asks no questions about ordering.
+WAVENET = "https://data-api.cefas.co.uk/api/export/12651?format=csv"
+WAVENET_CITATION = (
+    "Hull et al (2023). WaveNet near real-time data feed - from the past 48 "
+    "hours. Cefas, UK. V1. doi: https://doi.org/10.14466/CefasDataHub.142")
+# NEAR-LIVE TELEMETRY, NOT QUALITY-ASSURED DATA. Cefas say so themselves in the
+# dataset description, and the page has to say it too.
+WAVENET_CAVEAT = ("a near-live reading that Cefas have not quality checked")
+# How stale a reading may be and still be shown. The buoys report every half
+# hour; a mooring that has stopped transmitting must go quiet on the page
+# rather than leave this morning's figure up all week.
+WAVENET_MAX_AGE_H = 3.0
+
+# The buoys' own names, as Cefas publish them on the WaveNet map. The feed
+# itself carries only deployment codes, and a name invented from a code would be
+# a name on a public page that nobody at Cefas recognises. Read off
+# wavenet.cefas.co.uk/Map on 24 September 2026 — six of the seventeen were not
+# what I would have guessed, "Southwold Approach" and "West Gabbard 2" among
+# them. Only Cefas-operated and SEPA sites appear here; the third-party
+# waveriders in the same network are not in this feed.
+WAVENET_NAMES = {
+    "ARBROATH": "Arbroath",
+    "BLKSTONEWN": "Blackstones",
+    "DOWSINGWN": "Dowsing",
+    "FORTHWN": "Firth of Forth",
+    "HASTINGSWN": "Hastings",
+    "LIVBAYWN": "Liverpool Bay",
+    "MORAYWN": "Moray Firth",
+    "ORKNEYSEPA": "Orkney",
+    "POOLEBAYWN": "Poole Bay",
+    "SCARWTHRWN": "Scarweather",
+    "SPEMBROKWN": "South Pembrokeshire",
+    "STHKNOCKWN": "South Knock",
+    "STHWOLDWN": "Southwold Approach",
+    "SWSCILLYWN": "SW Isles of Scilly",
+    "TYNETEESWN": "Tyne/Tees",
+    "WESTGAB2WN": "West Gabbard",
+    "WHEBRIDSWN": "West of Hebrides",
+}

@@ -1511,6 +1511,83 @@ def sea_temperature(sites, feed, previous=None):
     return got, NOW
 
 
+def buoy_temperatures(feed):
+    """MEASURED sea temperature from the Cefas WaveNet buoys, OGL v3.0.
+
+    WHAT THIS IS FOR. Everything else on this site calls the sea temperature
+    "modelled", because it is: Open-Meteo's marine model on an 8km grid. The
+    model turns out to be good — checked against all seventeen buoys on 24
+    September 2026 it sat a median 0.3C away, worst case 1.2C — so this is not
+    a correction to it. It is a real thermometer in the real water, which is a
+    different kind of claim from a model output, and on the beaches near one it
+    is worth showing as exactly that.
+
+    WHAT IT IS NOT. Seventeen buoys against 941 bathing waters. They are
+    offshore moorings in open water, several tens of kilometres out, and inshore
+    shallows warm faster on a sunny day than the water around a buoy does. So
+    the reading travels with its distance and the page never presents it as the
+    temperature at the beach.
+    """
+    raw = fetch(S.WAVENET, timeout=120, tries=3).decode("utf-8-sig", "replace")
+    rows = list(csv.DictReader(io.StringIO(raw)))
+    if not rows:
+        raise RuntimeError("WaveNet export held no rows")
+
+    got, seen, stamps = {}, 0, []
+    for row in rows:
+        if (row.get("Parameter") or "").strip() != "TEMP":
+            continue
+        seen += 1
+        code = (row.get("Deployment") or "").strip()
+        name = S.WAVENET_NAMES.get(code)
+        # AN UNKNOWN CODE IS SKIPPED, NOT GUESSED AT. Cefas add and retire
+        # moorings, and a new one arrives here as a code with no name. Printing
+        # the code on a beach page — "the SPEMBROKWN buoy" — is worse than
+        # printing nothing, and inventing a name from it is worse still.
+        if not name:
+            continue
+        # The export has no timezone on its timestamps and nothing in the
+        # dataset states one, so this is read as UTC — which is what the rest of
+        # the collector stores and what the readings' own lag says they are.
+        # Treated as local time they would be an hour in the future for half the
+        # year, which is the check that settled it.
+        when = parse_iso(row.get("Date/Time"))
+        try:
+            temp = float(row.get("ResultMean"))
+            lat = float(row.get("Latitude"))
+            lon = float(row.get("Longitude"))
+        except (TypeError, ValueError):
+            continue
+        if when is None:
+            continue
+        stamps.append(when)
+        age = hours_since(when)
+        if age is None or age < 0 or age > S.WAVENET_MAX_AGE_H:
+            continue
+        prev = got.get(code)
+        if prev and prev["_when"] >= when:
+            continue
+        got[code] = {"n": name, "at": [round(lat, 4), round(lon, 4)],
+                     "c": round(temp, 1), "t": iso(when), "_when": when}
+
+    for rec in got.values():
+        rec.pop("_when", None)
+
+    feed.count = len(got)
+    feed.at = NOW
+    # Buoys go offline for maintenance and moorings get lifted, so a couple
+    # missing is ordinary. Nothing at all inside the age window is either a dead
+    # feed or a timestamp we have misread, and both must show as a fault.
+    feed.ok = bool(got)
+    if len(got) < len(S.WAVENET_NAMES):
+        feed.partial = "%d of %d buoys" % (len(got), len(S.WAVENET_NAMES))
+    newest = max(stamps) if stamps else None
+    print("    %-32s %4d buoys inside %.0fh, from %d temperature rows%s"
+          % ("", len(got), S.WAVENET_MAX_AGE_H, seen,
+             "; newest row %s" % iso(newest) if newest else ""))
+    return got
+
+
 def latest_samples(sites, feed):
     """The most recent lab result for each bathing water, England and Wales.
 
@@ -2567,6 +2644,10 @@ def previous_week():
         # the behaviour it could not deliver.
         return {"seaAt": d.get("seaAt"), "sea": d.get("sea") or {},
                 "seaOk": d.get("seaOk"),
+                # The buoys too, or the carry-forward beside the buoy fetch is
+                # dead code — the same fault this function already carries a
+                # paragraph about for rainPast.
+                "buoys": d.get("buoys") or {},
                 "stations": d.get("stations") or {},
                 "days": d.get("days") or [], "cells": d.get("cells") or {},
                 "rainPast": d.get("rainPast") or {},
@@ -2799,6 +2880,26 @@ def main():
                  if feeds["Sea temperature"].partial else ""))
     else:
         print("    %-32s waiting for the first forecast" % "Sea temperature")
+
+    # The measured figure from the buoys, alongside the modelled one. Asked for
+    # on the same condition as the sea above: it rides in the same payload, so
+    # collecting it on a run with no forecast to attach it to would throw it
+    # away. Cannot escalate a verdict — no verdict on this site has ever been
+    # decided by a temperature, and 17 buoys must not be able to mark 941
+    # beaches unchecked.
+    buoys = {}
+    if DAILY or (prev_week and prev_week.get("cells")):
+        buoys = run("Sea temperature (buoys)", buoy_temperatures,
+                    escalates=False) or {}
+        if not buoys:
+            # Keep yesterday's rather than blanking the pages, but only while it
+            # is inside the same window a fresh reading would have to meet.
+            for code, rec in ((prev_week or {}).get("buoys") or {}).items():
+                age = hours_since(parse_iso(rec.get("t")))
+                if age is not None and 0 <= age <= S.WAVENET_MAX_AGE_H:
+                    buoys[code] = rec
+            if buoys:
+                print("    %-32s %4d buoys carried forward" % ("", len(buoys)))
 
     # Ireland has real predictions, so Ireland does not use the global model.
     stations = {}
@@ -3220,12 +3321,18 @@ def main():
             # carried, so a partial set stays partial.
             "seaOk": (bool(feeds["Sea temperature"].ok) if sea
                       else prev.get("seaOk")),
+            # Measured sea temperature, keyed by buoy rather than by grid cell:
+            # seventeen of them for the whole coast, so every page can carry the
+            # lot and pick its own nearest for the price of a rounding error.
+            "buoys": buoys,
+            "buoyCite": S.WAVENET_CITATION,
             "stations": stations,
             "cells": cells,
             "pastDays": past_days,
             "rainPast": rain_past,
         }
         week_body = json.dumps(week, separators=(",", ":"))
+        print("    %-32s %4d buoys with a measured temperature" % ("Sea temperature (buoys)", len(buoys)))
         print("    %-32s %4d cells, %d days, %d with a sea temperature%s"
               % ("Week ahead", len(cells), len(days), len(sea_now),
                  "" if DAILY else " (forecast carried forward)"))
