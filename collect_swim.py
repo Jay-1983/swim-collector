@@ -2892,13 +2892,31 @@ def main():
         buoys = run("Sea temperature (buoys)", buoy_temperatures,
                     escalates=False) or {}
         if not buoys:
-            # Keep yesterday's rather than blanking the pages, but only while it
-            # is inside the same window a fresh reading would have to meet.
+            # Keep the last readings rather than blanking the pages, but only
+            # while they are inside the same window a fresh reading would have
+            # to meet.
             for code, rec in ((prev_week or {}).get("buoys") or {}).items():
                 age = hours_since(parse_iso(rec.get("t")))
                 if age is not None and 0 <= age <= S.WAVENET_MAX_AGE_H:
                     buoys[code] = rec
             if buoys:
+                # AND CARRY THE HEALTH WITH THEM, which is the same rule
+                # sea_temperature() states in capitals about itself further up
+                # this file. A feed left at its constructor defaults reports
+                # ok=False, and banners() then prints "Sea temperature (buoys)
+                # is unavailable, so that detail is missing below" in the quiet
+                # tier of every page on the site — while the pill is right
+                # there with a number in it. The page would be arguing with
+                # itself, which is the exact fault the sea carry-forward has a
+                # paragraph about.
+                f = feeds["Sea temperature (buoys)"]
+                f.ok, f.count = True, len(buoys)
+                newest = max((parse_iso(r.get("t")) for r in buoys.values()
+                              if parse_iso(r.get("t"))), default=None)
+                f.at = newest or NOW
+                mins = hours_since(f.at)
+                f.partial = ("carried forward, %d minutes old"
+                             % int((mins or 0) * 60))
                 print("    %-32s %4d buoys carried forward" % ("", len(buoys)))
 
     # Ireland has real predictions, so Ireland does not use the global model.
@@ -3325,7 +3343,6 @@ def main():
             # seventeen of them for the whole coast, so every page can carry the
             # lot and pick its own nearest for the price of a rounding error.
             "buoys": buoys,
-            "buoyCite": S.WAVENET_CITATION,
             "stations": stations,
             "cells": cells,
             "pastDays": past_days,

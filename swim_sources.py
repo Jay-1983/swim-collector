@@ -287,9 +287,6 @@ WAVENET = "https://data-api.cefas.co.uk/api/export/12651?format=csv"
 WAVENET_CITATION = (
     "Hull et al (2023). WaveNet near real-time data feed - from the past 48 "
     "hours. Cefas, UK. V1. doi: https://doi.org/10.14466/CefasDataHub.142")
-# NEAR-LIVE TELEMETRY, NOT QUALITY-ASSURED DATA. Cefas say so themselves in the
-# dataset description, and the page has to say it too.
-WAVENET_CAVEAT = ("a near-live reading that Cefas have not quality checked")
 # How stale a reading may be and still be shown. The buoys report every half
 # hour; a mooring that has stopped transmitting must go quiet on the page
 # rather than leave this morning's figure up all week.
