@@ -291,6 +291,9 @@ WAVENET_CITATION = (
 # hour; a mooring that has stopped transmitting must go quiet on the page
 # rather than leave this morning's figure up all week.
 WAVENET_MAX_AGE_H = 3.0
+# The export's timestamps carry no timezone and nothing in the dataset states
+# one. They are UTC — confirmed by Cefas by email on 28 September 2026, after
+# the publication lag alone proved unable to settle it.
 
 # The buoys' own names, as Cefas publish them on the WaveNet map. The feed
 # itself carries only deployment codes, and a name invented from a code would be

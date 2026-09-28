@@ -1547,10 +1547,10 @@ def buoy_temperatures(feed):
         if not name:
             continue
         # The export has no timezone on its timestamps and nothing in the
-        # dataset states one, so this is read as UTC — which is what the rest of
-        # the collector stores and what the readings' own lag says they are.
-        # Treated as local time they would be an hour in the future for half the
-        # year, which is the check that settled it.
+        # dataset states one. Read as UTC; Cefas confirmed that by email on
+        # 28 September 2026 (Sue Dale, relaying Olly Williams) after the lag
+        # alone could not settle it — 30 to 55 minutes as UTC, 90 to 115 as
+        # British time, and both are plausible for half-hourly telemetry.
         when = parse_iso(row.get("Date/Time"))
         try:
             temp = float(row.get("ResultMean"))
