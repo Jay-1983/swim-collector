@@ -2740,6 +2740,31 @@ def previous_snapshot():
         return None
 
 
+def previous_alert_spells():
+    """When each currently-warned beach entered the level it is at now.
+
+    NOT a reading, and nothing here is ever presented as live — which is the
+    rule previous_snapshot() states in capitals. This is one timestamp saying
+    when a warning began, so the feed can announce a spell once instead of once
+    a day.
+
+    Returns {id: (level, since)}; an empty dict when the previous state cannot
+    be read, which makes the caller stamp everything "now" and the feed fall
+    back to its old day-keyed behaviour. Degrading to a repeat is right: the
+    alternative is silently never announcing a warning at all.
+    """
+    url = os.environ.get("SWIM_INGEST_URL", "").replace("/ingest", "/data")
+    if not url:
+        return {}
+    try:
+        d = fetch_json(url, tries=1, timeout=20)
+        prev = ((d.get("brief") or {}).get("alerts")) or []
+        return {a["id"]: (a.get("level"), a.get("since"))
+                for a in prev if isinstance(a, dict) and a.get("id")}
+    except Exception:                               # noqa: BLE001
+        return {}
+
+
 def load_static(name):
     """Read a build artifact from disk, or from the live site.
 
@@ -3093,6 +3118,7 @@ def main():
     # alerts feed. One line per bathing water instead of the whole verdict with
     # its reasons, checks, gaps, rainfall and outfall list.
     brief_sites, alerts = {}, []
+    prev_spells = previous_alert_spells()
     by_id = {s["id"]: s for s in sites}
     for sid, rec in out.items():
         site = by_id.get(sid)
@@ -3198,9 +3224,21 @@ def main():
                 row.append(g[0][:140])
         brief_sites[sid] = row
         if rec["v"] in ("avoid", "advised"):
+            # WHEN THIS SPELL STARTED, so the feed can say it once.
+            #
+            # The guid in alerts.xml.js carries today's date, so a beach that
+            # stays warned produces a brand new item every single day — 39
+            # standing warnings re-announced daily to every subscriber, which
+            # teaches people to ignore the feed, and the feed is the thing that
+            # matters most out of season. Keyed on the spell instead: same level
+            # as last run means the same `since`, so the same guid, so no new
+            # item. A beach that clears and comes back gets a new one, which is
+            # the case the date was there to protect.
+            was_level, was_since = prev_spells.get(sid, (None, None))
             alerts.append({
                 "id": sid, "name": site["name"], "slug": site["slug"],
                 "level": rec["v"], "why": why[:220],
+                "since": was_since if (was_level == rec["v"] and was_since) else iso(NOW),
                 "where": ", ".join(x for x in (site.get("district"), site["country"]) if x),
                 "country": site["country"],
             })
