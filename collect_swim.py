@@ -3154,8 +3154,29 @@ def main():
     unknown_slugs = sorted(by_id[sid]["slug"] for sid, row in brief_sites.items()
                            if row[0] == "unknown" and sid in by_id
                            and by_id[sid].get("slug"))
+    # OUT OF SEASON IS NOT THE SAME AS UNREAD, and from 1 October the two were
+    # indistinguishable here. "unknown" was written when it meant roughly 70
+    # beaches the feeds genuinely could not reach; the moment the season closed
+    # it meant 778, every one of which WAS read — so a subscriber to Allonby's
+    # feed was told "Allonby could not be read at all in these readings", which
+    # is false, and the site-wide line claimed 778 of 941 were unreadable.
+    #
+    # Published separately so the feed can tell a reader the true thing. The
+    # `unknown` list keeps its meaning and its consumers; this is additive.
+    offseason_slugs = sorted(s["slug"] for s in sites
+                             if s.get("slug") and not in_season(s.get("country") or ""))
+    # THE HONEST "COULD NOT BE READ" COUNT: unknown AND still in season. The
+    # feed counts unknowns off brief.sites, which carries no slug and so cannot
+    # subtract the off-season ones itself — from 1 October that made every feed
+    # say "778 of the 941 bathing waters could not be read at all", when the
+    # true figure was the handful of genuine outages.
+    unread_count = sum(1 for sid, row in brief_sites.items()
+                       if row[0] == "unknown" and sid in by_id
+                       and in_season(by_id[sid].get("country") or ""))
     brief_body = json.dumps({"at": iso(NOW), "sites": brief_sites,
-                             "alerts": alerts, "unknown": unknown_slugs},
+                             "alerts": alerts, "unknown": unknown_slugs,
+                             "offseason": offseason_slugs,
+                             "unread": unread_count},
                             separators=(",", ":"), ensure_ascii=False)
     print("    %-32s %4d sites, %d under a warning (%.0f KB)"
           % ("Brief", len(brief_sites), len(alerts), len(brief_body.encode()) / 1024.0))
