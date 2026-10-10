@@ -58,7 +58,12 @@ permissions:
 
 jobs:
   collect:
-    runs-on: ubuntu-latest
+    # PINNED, not ubuntu-latest. GitHub moves that label to the next LTS and the
+    # migration window for this one closes on 19 October 2026. A collector that
+    # breaks on an image change does not fail loudly here: the run goes red, the
+    # snapshot simply stops being refreshed, and the beach pages quietly fall back
+    # to "can't say" while nothing tells anyone why.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
