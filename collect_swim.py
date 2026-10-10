@@ -2340,8 +2340,54 @@ def verdict(site, ctx):
 
     # ---- 5. season and coverage --------------------------------------------
     if not in_season(country):
-        gaps.append("Out of bathing season — daily forecasts and sampling stop until "
-                    "the summer, so nothing is being checked today")
+        # "NOTHING IS BEING CHECKED TODAY" WAS FALSE ON 796 OF THE 941 PAGES,
+        # and the page proved it two lines above: 796 carry at least one tick in
+        # "what was checked", and 165 of them have a live verdict of caution,
+        # advised or avoid produced by today's checks. Deal Castle read "Take
+        # care", "1 storm overflow discharged within 2km in the last 72 hours",
+        # and "nothing is being checked today" on one card. A reader who spots
+        # that stops believing the checklist, which is the best thing here.
+        #
+        # What actually stopped is the regulator's sampling and daily forecast.
+        # The dates come from the same SEASONS table in_season() reads, so the
+        # sentence cannot drift from the rule that produced it, and it names the
+        # resume date rather than "the summer" because the table has it.
+        #
+        # The overflow sentence is country-aware: the Republic publishes no
+        # storm overflow data at all and Northern Ireland publishes no live
+        # feed, so claiming monitors are still being read would be a promise
+        # those 273 pages cannot keep.
+        (m1, d1), (m2, d2) = SEASONS[country]
+        ended = "%d %s" % (d2, MONTHS[m2 - 1])
+        back = "%d %s" % (d1, MONTHS[m1 - 1])
+        # ONLY THE ENVIRONMENT AGENCY TAKES "THE". Natural Resources Wales,
+        # SEPA, DAERA and EPA Ireland do not, and "the Natural Resources Wales's"
+        # is the kind of seam that makes a reader trust the rest of the page
+        # less — on a sentence about to appear on 941 of them.
+        who = AUTHORITY.get(country, "the regulator")
+        if who == "Environment Agency":
+            who = "the " + who
+        # AND ONLY THREE OF THE FIVE ISSUE A DAILY FORECAST. The EPA and DAERA
+        # publish none — Ireland's live signal is the local authority
+        # restrictions register and Northern Ireland's is sample quality — so
+        # naming a forecast there would invent a thing that has never existed.
+        pair = country in ("England", "Wales", "Scotland")
+        what = ("routine sampling and the daily pollution forecast" if pair
+                else "routine sampling")
+        # Two subjects take "start", one takes "starts".
+        verb = "start" if pair else "starts"
+        line = ("Out of bathing season — %s's %s stopped on %s and %s again on "
+                "%s, so nothing official stands behind a clear verdict here"
+                % (who, what, ended, verb, back))
+        # WHAT IS STILL RUNNING, where anything is. The Republic publishes no
+        # storm overflow data at all and Northern Ireland no live feed, so for
+        # those 273 pages the honest second sentence names what IS read rather
+        # than monitors that do not exist.
+        if country not in ("Ireland", "Northern Ireland"):
+            line += ". The storm overflow monitors are still being read"
+        elif country == "Ireland":
+            line += ". The restrictions register is still being read"
+        gaps.append(line)
         level = raise_to("unknown")
     else:
         # Ireland is included: the restrictions feed is the ONLY live signal for
@@ -3089,6 +3135,26 @@ def main():
         picks = [w for w in (rec.get("why") or []) if w.get("text")]
         if rec["v"] in ("avoid", "advised"):
             picks = [w for w in picks if w.get("t") != "clear"] or picks
+        elif rec["v"] == "unknown":
+            # A "CAN'T SAY" MUST NOT BE EXPLAINED BY AN ALL-CLEAR.
+            #
+            # 374 of today's 779 unknown beaches were served as "Can't say
+            # today" over "No monitored storm overflow discharging within 2km"
+            # — a verdict that says we cannot tell you, under a line that says
+            # nothing is wrong. Together they read as "it's probably fine",
+            # which is the one inversion this site exists to refuse, and it is
+            # the line Google indexes and the line a reader with JavaScript off
+            # is left with.
+            #
+            # They are the busier beaches, too: a beach only has this line
+            # because it HAS a monitored overflow nearby.
+            #
+            # No `or picks` fallback, unlike the branch above. Falling through
+            # to nothing is the point — an empty `why` is what makes the block
+            # below append the gap, which is the true explanation: nothing is
+            # being sampled or forecast. A non-clear reason still wins if there
+            # is one.
+            picks = [w for w in picks if w.get("t") != "clear"]
         # AND LAST SEASON'S RATING IS NOT TODAY'S SEWAGE.
         #
         # The Poor-classification advisory is emitted as type "advised", the
