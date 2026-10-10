@@ -1977,7 +1977,25 @@ def verdict(site, ctx):
     # reason, no gap and no checklist line: a "Can't say" with a blank space
     # where the explanation goes. Only claimed when the feed itself was read,
     # or the gate further down reports the outage instead.
-    if not p and country in ("England", "Wales"):
+    # AND NOT OUT OF SEASON, WHEN NOBODY IS FORECASTING ANYWHERE.
+    #
+    # This fired on 454 of the 464 English beaches from 1 October. In season it
+    # is true of about eleven of them, so it was wrong on roughly 443 pages —
+    # and it sat on the same screen as COUNTRY_NOTE["England"], which says the
+    # Environment Agency "issues a pollution risk forecast for this bathing
+    # water every morning during the bathing season". A reader comparing the
+    # two had no way to decide which to believe.
+    #
+    # The trigger was the feed still being HEALTHY out of season: the EA relay
+    # keeps answering with a nearly empty document (ok, 10 rows, "using
+    # yesterday's forecast"), so the ok test below passed and the gap fired for
+    # every beach with no row. Wales escaped by luck alone — NRW's feed reports
+    # failed, so the same test suppressed it there.
+    #
+    # Out of season the line above this one already gives the real reason, and
+    # it is the true one: nothing is being forecast anywhere, rather than this
+    # beach being outside a list.
+    if not p and country in ("England", "Wales") and in_season(country):
         feed = FORECAST_FEED.get(country)
         if feed and ctx["feeds"].get(feed) and ctx["feeds"][feed].ok:
             gaps.append("%s does not publish a daily pollution risk forecast for "
