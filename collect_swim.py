@@ -1935,6 +1935,56 @@ FORECAST_FEED = {"England": "EA pollution risk forecast",
 INCIDENT_FEED = {"England": "EA incidents and suspensions"}
 
 
+def spill_minutes(row, live):
+    """How long this overflow has been discharging, in whole minutes, or None.
+
+    WHY A DURATION AND NOT JUST A TIMESTAMP. Every page says "1 storm overflow
+    discharged within 2km in the last 48 hours" whether it ran for three minutes
+    or a day and a half. Across the 748 United Utilities events that finished
+    inside a 48-hour window, 39 per cent ran under a quarter of an hour and the
+    longest ran 55 hours — and the site described both with the same sentence.
+    Eight minutes of overflow half a mile away is not the reason to change your
+    morning; two days of it is.
+
+    COMPUTED FROM THE TWO TIMESTAMPS, not read from the publishers' own duration
+    fields, even though three of them publish one. The pair is already in every
+    row — state() has stored "start" and "end" since the beginning, and the
+    verdict kept one of them and threw the other away — so this needs no new
+    request and no new field from anybody. It also sidesteps four traps those
+    fields carry: a live Scottish row can report its current event as 0.00
+    minutes while its 48-hour total reads 2,277; that 48-hour total is a window
+    total capped at exactly 2,880 and is not an event length at all; Welsh Water
+    publishes the hours as a string, one of them as "0.30000000000000004"; and
+    Scotland's figure is as-at-last-transmission, so on a live spill it lags the
+    clock by hours. Checked rather than assumed: on 1,451 finished Scottish
+    events the published duration matched end-minus-start to within a minute and
+    a half with no exceptions, and 2,047 of 2,049 Welsh rows agreed to within
+    three minutes. The timestamps are the better quantity and they are free.
+
+    Welsh times arrive as naive UK local and are converted on the way in by
+    parse_iso(assume_local=True), so a difference taken here is a difference
+    between two real instants and not two wall clocks an hour apart.
+
+    Southern Water publishes no times at all, so its rows return None and the
+    sentence stays as it is rather than acquiring a made-up number. 70 beaches
+    have Southern as their only overflow check.
+    """
+    start = parse_iso(row.get("start")) if row.get("start") else None
+    if start is None:
+        return None
+    end = NOW if live else (parse_iso(row.get("end")) if row.get("end") else None)
+    if end is None:
+        return None
+    mins = (end - start).total_seconds() / 60.0
+    # A NEGATIVE OR ABSURD SPAN IS BAD DATA, NOT A LONG SPILL. A stop stamped
+    # before its start, or a start in the future, says the row is wrong; and a
+    # monitor that has claimed to be discharging since the spring is stuck, not
+    # spilling. Saying nothing is the right answer to all three.
+    if mins < 0 or mins > 90 * 24 * 60:
+        return None
+    return int(round(mins))
+
+
 def _outfall_row(ctx, key, dist, code):
     """One nearby outfall, as the page needs it: what it discharges into, how far
     away, its state, and where it is.
@@ -2254,7 +2304,8 @@ def verdict(site, ctx):
         why.append({"t": "spill", "s": ctx["outfall_co"].get(nearest[0], "Water company"),
                     "text": "%d storm overflow%s discharging within %.0fkm right now"
                             % (len(now_list), "" if len(now_list) == 1 else "s", AFFECT_KM),
-                    "km": nearest[1], "at": nearest[2].get("start")})
+                    "km": nearest[1], "at": nearest[2].get("start"),
+                    "mins": spill_minutes(nearest[2], True)})
     elif recent_list:
         level = raise_to("caution")
         nearest = min(recent_list, key=lambda x: x[1])
@@ -2263,7 +2314,8 @@ def verdict(site, ctx):
                     "text": "%d storm overflow%s discharged within %.0fkm in the last %d hours"
                             % (len(recent_list), "" if len(recent_list) == 1 else "s",
                                AFFECT_KM, window),
-                    "km": nearest[1], "at": nearest[2].get("end")})
+                    "km": nearest[1], "at": nearest[2].get("end"),
+                    "mins": spill_minutes(nearest[2], False)})
 
     # A discharge just outside the radius does not escalate the verdict, but
     # staying silent about it would make "no warnings" mean more than it should.
