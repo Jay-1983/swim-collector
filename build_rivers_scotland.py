@@ -227,8 +227,41 @@ def main():
         md = meta.get(sn) or {}
         river = " ".join(str(md.get("river_name") or "").split())
         town = " ".join(str(md.get("station_name") or r.get("station_name") or "").split())
+        # A RANGE PER CALENDAR MONTH, built from the month own published
+        # figures. low is the lowest level ever recorded at this gauge for
+        # this month, and high is the same distance above the month mean, so
+        # the five words the page already has land where they should: "Very
+        # low" means below anything on record for the month, which is a
+        # statement England cannot make, and the middle band is the month
+        # average either way.
+        #
+        # NOT mmin..mmax. Those are both extremes and they are wildly
+        # asymmetric: the median gauge monthly maximum sits 5.6 times
+        # further above the mean than its minimum sits below, because the
+        # top end is floods. A band drawn between them is so wide that
+        # nothing is ever high, while the page goes on calling it the usual
+        # range.
+        lowM, highM = [], []
+        for i in range(12):
+            me, mn = mean[i], mmin[i]
+            if me is None or mn is None or me <= mn:
+                lowM.append(None)
+                highM.append(None)
+                continue
+            lowM.append(round(mn, 3))
+            highM.append(round(me + (me - mn), 3))
         out.append({
             "id": "R:S" + str(sn),
+            # THE SOURCE, SAID OUTRIGHT, because neither the id nor the
+            # country can be trusted to say it. swim/rivers.json already
+            # holds two ENGLISH gauges whose ids begin R:S - Combe Haven at
+            # Crowhurst (R:SE7050) and the Medway at Golden Green (R:SE561) -
+            # so a prefix test would route two live English pages into
+            # Scottish copy. It also already holds three gauges in Scotland
+            # and two in Wales that are Environment Agency stations with EA
+            # figures, so country is not the switch either. The feed a row
+            # belongs to is its own field.
+            "src": "sepa",
             "lat": round(lat, 5), "lon": round(lon, 5),
             "river": river,
             "town": town,
@@ -241,11 +274,25 @@ def main():
             # typical band and these are extremes — writing them into the same
             # fields would leave the page calling an extreme a usual range.
             "mean": mean, "mmin": mmin, "mmax": mmax,
+            "lowM": lowM, "highM": highM,
+            # The faulty-sensor gate the collector already applies to
+            # England needs a floor and a ceiling, and these are exactly
+            # that: the lowest and highest this gauge has recorded in any
+            # month. Proved necessary rather than assumed - the Lossie at
+            # Ballachraggan was reporting -9.000 against a record of 0.322
+            # to 1.966, which is a sentinel for "no data", not a level.
+            "minRec": round(min(v for v in mmin if v is not None), 3),
+            "maxRec": round(max(v for v in mmax if v is not None), 3),
             "months": have,
         })
 
+    import river_names as N
+    out, info = N.enrich(out, HERE)
     out.sort(key=lambda x: (x["river"], x["town"], x["id"]))
     print("    kept %d, dropped %s" % (len(out), dropped or "nothing"))
+    print("    names: %d merged as the same reach, %d slugs kept, %d minted, "
+          "%d outside any county" % (info["merged"], info["slugs_kept"],
+                                     info["slugs_new"], info["no_county"]))
 
     io.open(OUT, "w", encoding="utf-8").write(json.dumps({
         "note": ("Scottish river level gauges with SEPA's long-term monthly "

@@ -162,8 +162,25 @@ def main():
             drop("no usable percentile range")
             continue
         seen.add(sid)
+        # THE INTERQUARTILE RANGE IS A TYPICAL BAND, and it is the one place
+        # these figures line up with England's exactly. P25 to P75 is where this
+        # gauge sits half the time, which is what the Environment Agency's
+        # typicalRangeLow/High means too — so low/high here carry the same
+        # meaning the page's five words were written for, and no new vocabulary
+        # is needed. P75 is the DRY end and P25 the wet one, because these are
+        # exceedance percentiles and run downwards.
+        p25 = fnum(v.get("WEB.Percentile-25"))
+        p75 = fnum(v.get("WEB.Percentile-75"))
+        if None in (p25, p75) or p25 <= p75:
+            drop("no usable interquartile range")
+            continue
         out.append({
             "id": "R:I" + sid,
+            # See the note in build_rivers_scotland.py: neither the id prefix
+            # nor the country is a safe way to tell the collector which feed a
+            # row belongs to, so it is said here.
+            "src": "opw",
+            "low": round(p75, 3), "high": round(p25, 3),
             "lat": round(lat, 5), "lon": round(lon, 5),
             "river": body,
             "town": tidy(r.get("station_name")),
@@ -178,12 +195,39 @@ def main():
             # fields mean a typical band above a local zero.
             "wet": round(wet, 3), "mid": round(mid, 3), "dry": round(dry, 3),
             "amax": fnum((v or {}).get("WEB.YearHyd.Amax(median)")),
+            # THE WHOLE LADDER, kept so a page can say where today actually
+            # sits rather than only which fifth it is in. Bucketing alone put
+            # 68 per cent of these gauges in one band, which is a sentence that
+            # tells a reader nothing on two thirds of the pages; interpolating
+            # the published ladder spreads them properly (median rank 37 per
+            # cent, quartiles 24 and 55).
+            "pct": {k: fnum(v.get("WEB.Percentile-%s" % k))
+                    for k in ("01", "05", "10", "25", "50", "75", "80", "90",
+                              "95", "99")
+                    if fnum(v.get("WEB.Percentile-%s" % k)) is not None},
+            # The faulty-sensor floor and ceiling the collector needs. The
+            # driest published percentile and the highest annual maximum on
+            # record: a reading outside those is a broken gauge, not a river.
+            "minRec": fnum(v.get("WEB.Percentile-99")),
+            # One gauge publishes no annual maximum, and the collector gate
+            # is isinstance-guarded so it would simply skip the ceiling there.
+            # The 1 per cent exceedance level is the next best bound: a reading
+            # above the level this river tops only one day in a hundred, by more
+            # than the whole interquartile range, is a broken sensor.
+            "maxRec": (fnum(v.get("WEB.YearHyd.Amax(highest)"))
+                       or fnum(v.get("WEB.Percentile-01"))),
             "datum": tidy(r.get("station_gauge_datum_unit")),
             "unit": "mAOD",
         })
 
+    import river_names as N
+    # shout=True: these names arrive in capitals.
+    out, info = N.enrich(out, HERE, shout=True)
     out.sort(key=lambda x: (x["catchment"], x["town"], x["id"]))
     print("    kept %d, dropped %s" % (len(out), dropped or "nothing"))
+    print("    names: %d merged as the same reach, %d slugs kept, %d minted, "
+          "%d outside any county" % (info["merged"], info["slugs_kept"],
+                                     info["slugs_new"], info["no_county"]))
 
     io.open(OUT, "w", encoding="utf-8").write(json.dumps({
         "note": ("River level gauges in the Republic of Ireland with the "
