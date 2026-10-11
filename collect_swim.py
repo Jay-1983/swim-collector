@@ -319,7 +319,7 @@ def via_proxy(url):
     return base + "?u=" + urllib.parse.quote(url, safe=""), token
 
 
-def fetch(url, tries=3, timeout=90, backoff=2):
+def fetch(url, tries=3, timeout=90, backoff=2, headers_extra=None):
     # KEYED BY THE URL THE CALLER ASKED FOR, not the one we went through.
     # via_proxy rewrites `url` to the relay's address, and RELAY_AGE was stored
     # under that — while note_relay_age() looks it up by the original. The two
@@ -337,6 +337,16 @@ def fetch(url, tries=3, timeout=90, backoff=2):
             }
             if token:
                 headers["Authorization"] = "Bearer " + token
+            # A CALLER COULD NOT ADD A HEADER AT ALL, and one source needs to.
+            # SEPA allocate request credits against the caller, 5,000 a day, and
+            # document a Referer as an alternative allocation to the IP address.
+            # The collector runs on shared GitHub Actions runners, so without
+            # one this site would be drawing on an allowance any stranger on the
+            # same runner address can spend. Merged last so nothing can
+            # overwrite the relay Authorization above it.
+            for k, v in (headers_extra or {}).items():
+                if k.lower() != "authorization":
+                    headers[k] = v
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
                 raw = r.read()
@@ -2537,121 +2547,247 @@ RIVER_LEVELS = ("https://environment.data.gov.uk/flood-monitoring/data/readings"
 # the word, and a river can rise a long way in three hours.
 RIVER_MAX_AGE_MIN = 180
 
+# SEPA, one call for every Scottish gauge. The bbox is the whole country and
+# the series name is the 15-minute level; 394 rows come back, of which the
+# register keeps the ones that also publish a long-term monthly range.
+SEPA_LEVELS = ("https://timeseries.sepa.org.uk/KiWIS/KiWIS?datasource=0"
+               "&service=kisters&type=queryServices&format=json"
+               "&request=getTimeseriesValueLayer&bbox=-9,54,0,61"
+               "&stationparameter_no=SG&ts_shortname=15m.Cmd")
+# SEPA allocate 5,000 request credits a day and document a Referer as an
+# alternative allocation to the caller IP address. This collector runs on
+# shared GitHub Actions runners, so without one it would be drawing on an
+# allowance any stranger on the same runner address can spend.
+SEPA_HEADERS = {"Referer": "https://caniswim.co.uk/"}
+
+# waterlevel.ie. This one register call carries the live reading as well as
+# the metadata, so there is no second request to make.
+OPW_LEVELS = ("https://waterlevel.ie/hydro-data/data/internet/layers/10/"
+              "index.json")
+
+# Which register, which live feed, which field joins them, and who to name
+# when it is the regulator that is quiet rather than this site.
+# ONE REGISTER, THREE SOURCES. swim/rivers.json carries every gauge the site
+# has a page for, each row saying which feed it belongs to, so the build reads
+# one file and the collector makes one load_static call. Three published
+# registers would have been three things to keep in step and three ways for a
+# page to exist with no feed behind it.
+RIVER_SOURCES = (
+    {"src": "ea", "register": "rivers.json", "feed": "River levels",
+     "key": "measure", "who": "The Environment Agency", "country": "England"},
+    {"src": "sepa", "register": "rivers.json",
+     "feed": "SEPA river levels", "key": "ts", "who": "SEPA",
+     "country": "Scotland"},
+    {"src": "opw", "register": "rivers.json",
+     "feed": "Irish river levels", "key": "station",
+     "who": "waterlevel.ie", "country": "Ireland"},
+)
+
+
+def river_range(r, month):
+    """The low and high this reading is judged against, for this month.
+
+    England publishes one typical band for the whole year and it is on the
+    row as low/high. Scotland publishes a figure per calendar month, so the
+    row carries twelve pairs and the band depends on the date — which is why
+    this is resolved here, in the collector, on every run, rather than baked
+    into a page that is served for months. Ireland is back to a single pair:
+    its interquartile range is a typical band in the same sense England's is.
+
+    Returns (low, high) or (None, None) when there is nothing to compare
+    against, which is a third state and not the same as a dead gauge.
+    """
+    lm, hm = r.get("lowM"), r.get("highM")
+    if isinstance(lm, list) and isinstance(hm, list) and len(lm) == 12:
+        i = max(0, min(11, month - 1))
+        low, high = lm[i], hm[i]
+    else:
+        low, high = r.get("low"), r.get("high")
+    if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+        return None, None
+    return (low, high) if high > low else (None, None)
+
+
+def river_latest(spec, feed):
+    """{join key: (value, when)} from whichever regulator this source is."""
+    if spec["src"] == "ea":
+        d = fetch_json(RIVER_LEVELS, timeout=120, tries=3)
+        out = {}
+        for it in (d.get("items") or []):
+            m = str(it.get("measure") or "").rsplit("/", 1)[-1]
+            v = it.get("value")
+            # A few measures answer with a list when the station reports
+            # twice in the same minute. Neither value is more current than
+            # the other, so take the last and move on rather than guessing.
+            if isinstance(v, list):
+                v = v[-1] if v else None
+            if not m or not isinstance(v, (int, float)) or isinstance(v, bool):
+                continue
+            out[m] = (v, it.get("dateTime"))
+        return out
+    if spec["src"] == "sepa":
+        d = fetch_json(SEPA_LEVELS, timeout=120, tries=3,
+                       headers_extra=SEPA_HEADERS)
+        # KiWIS answers 200 with an error OBJECT rather than a status, so a
+        # failure reads as data unless this is checked.
+        if isinstance(d, dict):
+            raise RuntimeError("SEPA: %s" % str(d.get("message") or d)[:120])
+        out = {}
+        for row in (d or []):
+            if not isinstance(row, dict):
+                continue
+            v = row.get("ts_value")
+            tid = str(row.get("ts_id") or "")
+            if tid and isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[tid] = (v, row.get("timestamp"))
+        return out
+    d = fetch_json(OPW_LEVELS, timeout=120, tries=3)
+    out = {}
+    for row in (d if isinstance(d, list) else []):
+        if not isinstance(row, dict):
+            continue
+        v = row.get("ts_value")
+        sid = str(row.get("station_id") or "")
+        if sid and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[sid] = (v, row.get("timestamp"))
+    return out
+
 
 def collect_rivers(feeds):
-    """Today's level at every gauged river reach.
+    """Today's level at every gauged river reach, from three regulators.
 
-    ONE CALL FOR ALL OF THEM. The Agency will return the latest reading for
-    every level measure in the country in a single request — about 1.3MB — so
-    this costs one fetch rather than 1,912 of them, and asking per station would
-    be both slower and ruder.
+    ONE CALL PER COUNTRY. Each of the three returns the latest reading for every
+    gauge it keeps in a single request — the Agency about 1.3MB, SEPA 65KB for
+    all 394 Scottish gauges, waterlevel.ie 380KB which carries the metadata
+    too — so this costs three fetches rather than two and a half thousand.
 
     WHAT IS PUBLISHED IS A POSITION, NOT A NUMBER ALONE. A level is measured
     against a datum belonging to that station, so the reading only means
     something beside the range that station usually runs at. Both go out
     together and the page is written so it can never show one without the other.
 
+    THE THREE RANGES ARE NOT THE SAME QUANTITY, which is why river_range()
+    exists and why Scotland's is resolved here on every run: the Agency
+    publishes one typical band for the whole year, SEPA publishes a figure per
+    calendar month, and waterlevel.ie publishes exceedance percentiles whose
+    middle two quartiles are a typical band in the same sense England's is. A
+    page is served for months, so the month-dependent one cannot be baked in at
+    build time.
+
     A reading older than three hours is dropped rather than shown. A river can
     rise a long way in three hours, and a stale level presented as today's is
     the same fault as a stale bathing water verdict.
+
+    ONE DEAD REGULATOR DOES NOT BLANK THE OTHER TWO. Each source is fetched,
+    counted and reported on its own, and a source that cannot be read leaves its
+    own gauges absent — which the page already states honestly — rather than
+    costing the other two countries their levels.
     """
-    f = feeds["River levels"] = Feed("River levels", covers=["England"],
-                                     escalates=False)
-    # THE PUBLISHED REGISTER, not a local copy. Same route the waterfalls take:
-    # the collector runs on a GitHub runner with none of these files on disk, so
-    # reading os.path.join(OUT, ...) found nothing and published no levels at
-    # all. One source of truth, and a rebuilt register reaches the collector the
-    # moment it is deployed.
-    try:
-        reg = load_static("rivers.json").get("rivers") or []
-    except Exception as e:                              # noqa: BLE001
-        f.error = e
-        print("    %-32s register unavailable: %s" % ("River levels", str(e)[:80]))
+    out = {}
+    tally = []
+    month = NOW.month
+    for spec in RIVER_SOURCES:
+        name = spec["feed"]
+        # NOT covers=[...]. A river gauge has no bathing season, and Feed only
+        # consults the season table when `covers` is set: with it, a failed
+        # fetch in October published an "offseason: ended 30 September, resumes
+        # 15 May" block against river levels, which read every fifteen minutes
+        # all winter. Latent rather than live, because this feed is not in the
+        # published feeds map today — but it was wrong, and two more copies of
+        # it were about to be made.
+        f = feeds[name] = Feed(name, escalates=False)
+        # THE PUBLISHED REGISTER, not a local copy. The collector runs on a
+        # GitHub runner with none of these files on disk, so reading
+        # os.path.join(OUT, ...) found nothing and published no levels at all.
+        try:
+            reg = [r for r in (load_static(spec["register"]).get("rivers") or [])
+                   if (r.get("src") or "ea") == spec["src"]]
+        except Exception as e:                          # noqa: BLE001
+            f.error = e
+            print("    %-32s register unavailable: %s" % (name, str(e)[:70]))
+            continue
+        if not reg:
+            print("    %-32s register is empty" % name)
+            continue
+
+        try:
+            latest = river_latest(spec, f)
+        except Exception as e:                          # noqa: BLE001
+            f.error = e
+            print("    %-32s FAILED %s" % (name, str(e)[:100]))
+            continue
+
+        stale = missing = faulty = nocompare = 0
+        kept = 0
+        for r in reg:
+            got = latest.get(str(r.get(spec["key"]) or ""))
+            if not got:
+                missing += 1
+                continue
+            value, when = got
+            age = hours_since(parse_iso(when)) if when else None
+            if age is None or age * 60 > RIVER_MAX_AGE_MIN or age < -0.25:
+                stale += 1
+                continue
+            low, high = river_range(r, month)
+            if low is None:
+                # A READING WITH NOTHING TO JUDGE IT BY IS ITS OWN STATE, and
+                # this branch used to be a bare `continue` that incremented
+                # nothing: a register row the collector could not interpret
+                # vanished from the payload with no counter, no note and no log
+                # line. One Scottish gauge has no long-term mean for January to
+                # April, so it is a real case and not a hypothetical one.
+                nocompare += 1
+                continue
+            # A READING THE GAUGE HAS NEVER SEEN IS A BROKEN GAUGE, NOT A DRY
+            # RIVER. Spring Brook at Grove Park reports -27.6m against a typical
+            # range of 0.39 to 0.45; the Lossie at Ballachraggan reports -9.000,
+            # which is a sentinel for "no data". Both regulators record the
+            # highest and lowest the gauge has ever read, which is the right
+            # yardstick: a record can be broken, so there is room either side.
+            span = high - low
+            floor, ceiling = r.get("minRec"), r.get("maxRec")
+            margin = max(span, 0.2)
+            if isinstance(floor, (int, float)) and value < floor - margin:
+                faulty += 1
+                continue
+            if isinstance(ceiling, (int, float)) and value > ceiling + margin:
+                faulty += 1
+                continue
+            row = {"v": round(value, 3), "at": when,
+                   "band": round((value - low) / span, 3)}
+            # THE RANGE TRAVELS WITH THE READING WHEN IT CHANGES WITH THE DATE.
+            # The page and the edge draw the band's two ends, and a Scottish
+            # page built in June and served in October would otherwise label the
+            # scale with June's figures. Sent only where it is month-dependent,
+            # so England's 1,905 rows do not each grow two numbers.
+            if isinstance(r.get("lowM"), list):
+                row["lo"], row["hi"] = low, high
+            out[r["id"]] = row
+            kept += 1
+
+        f.count = kept
+        f.at = NOW
+        f.ok = bool(kept) and kept >= len(reg) * 0.5
+        notes = []
+        if stale:
+            notes.append("%d over %d minutes old" % (stale, RIVER_MAX_AGE_MIN))
+        if missing:
+            notes.append("%d not reporting" % missing)
+        if faulty:
+            notes.append("%d outside anything the gauge has recorded" % faulty)
+        if nocompare:
+            notes.append("%d with no range for this month" % nocompare)
+        if notes:
+            f.partial = ", ".join(notes)
+        print("    %-32s %4d of %d reaches%s"
+              % (name, kept, len(reg),
+                 " (" + f.partial + ")" if f.partial else ""))
+        tally.append((spec, kept, len(reg)))
+
+    if not out:
         return None
-    if not reg:
-        print("    %-32s register is empty" % "River levels")
-        return None
-
-    try:
-        d = fetch_json(RIVER_LEVELS, timeout=120, tries=3)
-    except Exception as e:                              # noqa: BLE001
-        f.error = e
-        print("    %-32s FAILED %s" % ("River levels", str(e)[:120]))
-        return None
-
-    # Keyed by the measure id the register recorded, so a station with an
-    # upstream and a downstream gauge cannot have the wrong one read for it.
-    latest = {}
-    for it in (d.get("items") or []):
-        m = str(it.get("measure") or "").rsplit("/", 1)[-1]
-        v = it.get("value")
-        # A few measures answer with a list when the station reports twice in
-        # the same minute. Neither value is more current than the other, so
-        # take the last and move on rather than guessing.
-        if isinstance(v, list):
-            v = v[-1] if v else None
-        if not m or not isinstance(v, (int, float)) or isinstance(v, bool):
-            continue
-        latest[m] = (v, it.get("dateTime"))
-
-    out, stale, missing, faulty = {}, 0, 0, 0
-    for r in reg:
-        got = latest.get(r.get("measure"))
-        if not got:
-            missing += 1
-            continue
-        value, when = got
-        age = hours_since(parse_iso(when)) if when else None
-        if age is None or age * 60 > RIVER_MAX_AGE_MIN or age < -0.25:
-            stale += 1
-            continue
-        low, high = r.get("low"), r.get("high")
-        if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
-            continue
-        # A READING THE GAUGE HAS NEVER SEEN IS A BROKEN GAUGE, NOT A DRY RIVER.
-        #
-        # Spring Brook at Grove Park reports -27.6m against a typical range of
-        # 0.39 to 0.45. Published, that is "far below normal" on a page about a
-        # brook that is running perfectly well. The Agency records the highest
-        # and lowest this gauge has ever read, which is the right yardstick: a
-        # record can be broken, so there is room either side, but not by half a
-        # metre on a brook that runs in centimetres.
-        span = high - low
-        floor = r.get("minRec")
-        ceiling = r.get("maxRec")
-        margin = max(span, 0.2)
-        if isinstance(floor, (int, float)) and value < floor - margin:
-            faulty += 1
-            continue
-        if isinstance(ceiling, (int, float)) and value > ceiling + margin:
-            faulty += 1
-            continue
-        # Where today sits in the station's usual range, as a fraction: 0 is the
-        # bottom of normal, 1 the top, above 1 is higher than this gauge usually
-        # runs. Computed here so every page and the map agree on one definition.
-        band = (value - low) / span if span > 0 else None
-        out[r["id"]] = {
-            "v": round(value, 3),
-            "at": when,
-            "band": round(band, 3) if band is not None else None,
-        }
-
-    f.count = len(out)
-    f.at = NOW
-    f.ok = bool(out) and len(out) >= len(reg) * 0.5
-    notes = []
-    if stale:
-        notes.append("%d over %d minutes old" % (stale, RIVER_MAX_AGE_MIN))
-    if missing:
-        notes.append("%d not reporting" % missing)
-    if faulty:
-        notes.append("%d outside anything the gauge has recorded" % faulty)
-    if notes:
-        f.partial = ", ".join(notes)
-    print("    %-32s %4d of %d reaches%s"
-          % ("River levels", len(out), len(reg),
-             " (" + f.partial + ")" if f.partial else ""))
-    return {"at": iso(NOW), "rivers": out}
+    return {"at": iso(NOW), "rivers": out, "_tally": tally}
 
 
 def collect_waterfalls(feeds):
@@ -3363,16 +3499,37 @@ def main():
     print("Rivers")
     rivers_snapshot = collect_rivers(feeds)
     rivers_body = None
-    # TOO FEW FRESH READINGS IS AN OUTAGE, NOT A SNAPSHOT. The site refuses a
-    # rivers payload under 800 reaches (422), and on 15 September the Agency's
-    # flood API returned 503s and stale readings, so every run sent 0 and was
-    # refused. Holding it back keeps the last good copy, which the page already
-    # labels with its age.
-    if rivers_snapshot and len(rivers_snapshot.get("rivers") or {}) < 800:
-        print("    %-32s only %d fresh, keeping the last published copy"
-              % ("River levels", len(rivers_snapshot.get("rivers") or {})))
-        PUBLISH_PROBLEMS.append("river levels held back: only %d of 1,910 gauges were fresh"
-                                % len(rivers_snapshot.get("rivers") or {}))
+    # TOO FEW FRESH READINGS IS AN OUTAGE, NOT A SNAPSHOT, AND EACH REGULATOR
+    # IS JUDGED AGAINST ITS OWN REGISTER, BY NAME.
+    #
+    # This was one test against a typed "1,910". With three sources and
+    # about 2,570 gauges, England alone being fresh clears any single total
+    # — so a complete SEPA and waterlevel.ie outage would have published as
+    # a healthy green run with nothing said anywhere, which is the failure
+    # this hold-back exists to prevent, one country along. The denominator
+    # is also no longer typed: a count that cannot notice the register
+    # growing is a count that will be wrong the day it does.
+    tally = (rivers_snapshot or {}).pop("_tally", [])
+    for spec, kept, total in tally:
+        if total and kept < total * 0.4:
+            PUBLISH_PROBLEMS.append(
+                "%s thin: only %d of %d gauges were fresh"
+                % (spec["feed"], kept, total))
+    if rivers_snapshot and not tally:
+        PUBLISH_PROBLEMS.append("no river source answered at all")
+    # The site refuses a rivers payload under 800 reaches (422), and on 15
+    # September the Agency returned 503s and stale readings so every run
+    # sent 0 and was refused. Holding it back keeps the last good copy,
+    # which the page already labels with its age. Kept at the number the
+    # Worker itself uses, because publishing under it only earns a 422.
+    fresh = len((rivers_snapshot or {}).get("rivers") or {})
+    if rivers_snapshot and fresh < 800:
+        print("    %-32s only %d fresh across %d source%s, keeping the last "
+              "published copy" % ("rivers", fresh, len(tally),
+                                  "" if len(tally) == 1 else "s"))
+        PUBLISH_PROBLEMS.append(
+            "river levels held back: only %d of %d gauges were fresh"
+            % (fresh, sum(t for _, _, t in tally) or fresh))
         rivers_snapshot = None
     if rivers_snapshot:
         rivers_body = json.dumps(rivers_snapshot, separators=(",", ":"),
