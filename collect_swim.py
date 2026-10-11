@@ -2565,6 +2565,15 @@ SEPA_HEADERS = {"Referer": "https://caniswim.co.uk/"}
 OPW_LEVELS = ("https://waterlevel.ie/hydro-data/data/internet/layers/10/"
               "index.json")
 
+# Natural Resources Wales. The same shape as waterlevel.ie: the station list
+# carries latestValue and latestTime for every gauge, so the live reading is
+# one call and the history endpoint is only needed when the register is
+# rebuilt. Keyed on the PARAMETER id, which is the only thing that selects a
+# series on this service — the history endpoint ignores locationId
+# entirely, which is how three different rivers came back with identical
+# readings while the register was being built.
+NRW_LEVELS = "https://rivers-and-seas.naturalresources.wales/map/GetStations"
+
 # Which register, which live feed, which field joins them, and who to name
 # when it is the regulator that is quiet rather than this site.
 # ONE REGISTER, THREE SOURCES. swim/rivers.json carries every gauge the site
@@ -2581,6 +2590,9 @@ RIVER_SOURCES = (
     {"src": "opw", "register": "rivers.json",
      "feed": "Irish river levels", "key": "station",
      "who": "waterlevel.ie", "country": "Ireland"},
+    {"src": "nrw", "register": "rivers.json",
+     "feed": "Welsh river levels", "key": "param",
+     "who": "Natural Resources Wales", "country": "Wales"},
 )
 
 
@@ -2640,6 +2652,21 @@ def river_latest(spec, feed):
             tid = str(row.get("ts_id") or "")
             if tid and isinstance(v, (int, float)) and not isinstance(v, bool):
                 out[tid] = (v, row.get("timestamp"))
+        return out
+    if spec["src"] == "nrw":
+        d = fetch_json(NRW_LEVELS, timeout=120, tries=3)
+        out = {}
+        for row in (d if isinstance(d, list) else []):
+            if not isinstance(row, dict):
+                continue
+            for q in (row.get("parameters") or []):
+                # typeId 1 is River Level. 2 is Rainfall and 3 is Tide Level,
+                # and a tide is not an answer to "is the river up".
+                if q.get("typeId") != 1 or not q.get("id"):
+                    continue
+                v = q.get("latestValue")
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    out[str(q["id"])] = (v, q.get("latestTime"))
         return out
     d = fetch_json(OPW_LEVELS, timeout=120, tries=3)
     out = {}
@@ -2727,7 +2754,30 @@ def collect_rivers(feeds):
             value, when = got
             age = hours_since(parse_iso(when)) if when else None
             if age is None or age * 60 > RIVER_MAX_AGE_MIN or age < -0.25:
+                # A READING THAT IS TOO OLD IS NOT THE SAME AS NO READING, and
+                # the page was telling 300 gauges' readers the wrong one of the
+                # two. A dropped row leaves the page saying "the regulator is
+                # not publishing a current level here — that means the
+                # gauge is not reporting", which on a gauge that reported at a
+                # quarter past eight this morning is simply untrue.
+                #
+                # Natural Resources Wales made it unmissable: their service
+                # publishes in one batch and was eleven hours behind, so all 219
+                # Welsh gauges were "not reporting" while every one of them had
+                # a reading. The Agency has 62 like it today, SEPA 14,
+                # waterlevel.ie 5.
+                #
+                # So the reading goes out WITHOUT A BAND, which is the thing
+                # that makes a verdict, and with `old` set so the page can say
+                # what it actually knows: the last reading, and when. Nothing
+                # downstream treats a row with no band as an answer — the
+                # edge declines to inject it and the page draws no verdict
+                # word — and that is exactly right. It is information, not
+                # an answer.
                 stale += 1
+                if isinstance(value, (int, float)) and when:
+                    out[r["id"]] = {"v": round(value, 3), "at": when,
+                                    "band": None, "old": True}
                 continue
             low, high = river_range(r, month)
             if low is None:

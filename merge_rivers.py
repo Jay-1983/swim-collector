@@ -28,14 +28,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SITE = os.environ.get("SWIM_SITE") or os.path.join(
     os.path.dirname(HERE), "jhw-mobile-pr", "swim")
 
-EXTRA = (("rivers_scotland.json", "sepa"), ("rivers_ireland.json", "opw"))
+EXTRA = (("rivers_scotland.json", "sepa"), ("rivers_ireland.json", "opw"),
+         ("rivers_wales.json", "nrw"))
 # The fields a page or the collector actually reads. Everything else in the two
 # source files — the twelve-month mean/mmin/mmax arrays, the percentile ladder,
 # the station numbers — is working material for the builders and has no business
 # in a file the site downloads on every collector run.
 KEEP = ("id", "src", "lat", "lon", "river", "town", "catchment", "name", "slug",
         "district", "country", "low", "high", "lowM", "highM", "minRec",
-        "maxRec", "unit", "measure", "ts", "station", "pct", "datum")
+        "maxRec", "unit", "measure", "ts", "station", "pct", "datum",
+        "param", "welsh", "to")
 
 
 def main():
