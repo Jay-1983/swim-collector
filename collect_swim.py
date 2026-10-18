@@ -3562,9 +3562,11 @@ def main():
     tally = (rivers_snapshot or {}).pop("_tally", [])
     for spec, kept, total in tally:
         if total and kept < total * 0.4:
-            PUBLISH_PROBLEMS.append(
-                "%s thin: only %d of %d gauges were fresh"
-                % (spec["feed"], kept, total))
+            PUBLISH_NOTES.append(
+                "%s — only %d of %d gauges had a reading inside the last "
+                "%d minutes, so those pages show the last reading with its age "
+                "instead of a verdict"
+                % (spec["feed"], kept, total, RIVER_MAX_AGE_MIN))
     if rivers_snapshot and not tally:
         PUBLISH_PROBLEMS.append("no river source answered at all")
     # The site refuses a rivers payload under 800 reaches (422), and on 15
@@ -3866,6 +3868,14 @@ def main():
         # flowing. A wording gap must never hold back a water quality warning.
         return 1
 
+    # Printed whether or not anything failed, and BEFORE the problems below, so
+    # a run that is red for a real reason does not bury them.
+    if PUBLISH_NOTES:
+        print()
+        print("Worth knowing, but nothing to do and not a failure:")
+        for note in PUBLISH_NOTES:
+            print("    %s" % note)
+
     # Same shape, same reason: the site is current and the run is red until
     # somebody looks. Last, so it cannot skip the notifications either — which
     # is the other thing the old mid-publish raise was quietly doing.
@@ -3882,7 +3892,29 @@ def main():
 
 # Health complaints from the publish endpoint, raised after everything has been
 # published rather than in the middle of it. See the note in publish().
+#
+# A PROBLEM IS SOMETHING THIS RUN LOST. A payload that did not publish, a
+# history row not recorded, a rollup not written: things with a cause at this
+# end and something to do about them. Those turn the run red, which sends an
+# email, which is the point.
 PUBLISH_PROBLEMS = []
+
+# AND A NOTE IS SOMEBODY ELSE'S PUBLISHING SCHEDULE.
+#
+# A regulator running behind is not a fault in this job and there is nothing to
+# do about it. With four of them the odds of all four being current at any given
+# moment are not good, and treating it as a failure sent thirteen red runs and
+# thirteen emails in four hours over waterlevel.ie being six hours behind —
+# while every one of those runs published the site correctly and said so.
+#
+# Nothing is lost when a source is behind: its readings still go out, with no
+# band and flagged old, and the page says "the most recent reading from this
+# gauge is 0.35m, taken 11 hours ago". The surface that should carry it is the
+# page, which does, not an email every fifteen minutes.
+#
+# Wales was eleven hours behind on 11 October and current again within two days
+# with nothing done about it. This is that, and it is routine.
+PUBLISH_NOTES = []
 
 
 def publish(body, kind=None):
