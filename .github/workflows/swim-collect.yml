@@ -96,6 +96,7 @@ jobs:
           # the fault that cost 2,336 waterfalls their forecast.
           python3 tests/test_prf_pending.py
           python3 tests/test_week_cells.py
+          python3 tests/test_brief_clip.py
 
       - name: Install the push library
         run: python -m pip install --quiet "pywebpush==2.0.3"

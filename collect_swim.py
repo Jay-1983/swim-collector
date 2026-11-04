@@ -509,6 +509,47 @@ def parse_iso(v, assume_local=False):
     return d.replace(tzinfo=timezone.utc)
 
 
+def brief_clip(text, cap):
+    """Shorten a sentence for the brief without stopping mid-word.
+
+    THE BRIEF IS THE SERVED HTML. The edge writes this string into #v-body
+    before any script runs, so it is what a crawler, a link preview and anybody
+    without JavaScript reads under the verdict. It was cut with a bare [:140].
+
+    Every one of the 452 beaches currently answering "Can't say today" falls
+    back to its first gap, and every one of those gaps is longer than 140
+    characters — median 208, longest 255. So all 452 served a sentence that
+    stopped in the middle of a word:
+
+        "...the daily pollution forecast stopped on 30 September and start
+         again o"
+
+    That is the whole of what Google sees for those pages. It is also the half
+    of the sentence that matters least: the clause it cut off is the one saying
+    nothing official stands behind a verdict.
+
+    A cap is still right — this payload is read from KV on every page view of
+    the whole site — so this keeps one, and spends it on a COMPLETE sentence.
+    Preferring the first full stop costs about 17KB across all 941 sites and
+    buys 452 pages an ending. A sentence with no full stop inside the cap falls
+    back to the last whole word with an ellipsis, so the cut is at least visible
+    as one rather than reading like the text simply ran out.
+    """
+    t = (text or "").strip()
+    if len(t) <= cap:
+        return t
+    # A full stop inside the cap, as long as it leaves something worth serving.
+    # Without the floor, a sentence opening with an abbreviation would clip to
+    # three words and look like a worse fault than the one this replaces.
+    cut = t.rfind(". ", 0, cap + 1)
+    if cut > cap // 3:
+        return t[:cut + 1]
+    cut = t.rfind(" ", 0, cap)
+    if cut <= 0:
+        return t[:cap]
+    return t[:cut].rstrip(" ,;:\u2014-") + "\u2026"
+
+
 def iso(d):
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -3455,11 +3496,11 @@ def main():
         # Only when there is no reason, and only the first gap, because this
         # payload is read by the edge on every page view of the whole site and
         # gaps are already sorted most-urgent-first.
-        row = [rec["v"], why[:120]]
+        row = [rec["v"], brief_clip(why, 120)]
         if not why:
             g = (rec.get("gaps") or [])
             if g:
-                row.append(g[0][:140])
+                row.append(brief_clip(g[0], 230))
         brief_sites[sid] = row
         if rec["v"] in ("avoid", "advised"):
             # WHEN THIS SPELL STARTED, so the feed can say it once.
