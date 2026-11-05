@@ -509,6 +509,41 @@ def parse_iso(v, assume_local=False):
     return d.replace(tzinfo=timezone.utc)
 
 
+def company_coverage(sites, nearby, outfall_co):
+    """Which countries each water company's outfalls actually reach.
+
+    Feed(covers=...) decides where a feed's failure is announced. Every forecast
+    feed was given one; not one of the eleven water company feeds was, and
+    coversHere() in CORE_JS reads a missing list as "everywhere". So when
+    Southern Water stopped publishing on 4 November 2026, all 240 Irish, 33
+    Northern Irish, 90 Scottish and 114 Welsh beach pages carried a banner about
+    an English company with no monitored outfall near any of them — on pages
+    whose own body copy says no overflow data is published for them at all.
+
+    Counted from the two registers rather than typed: nearby.json says which
+    outfalls sit near each bathing water, outfalls.json says who owns each one.
+    A company covers the countries of the beaches its own outfalls are near.
+    Measured on 5 November 2026 this gives Southern Water England, Scottish
+    Water Scotland, and Welsh Water England and Wales — which is right, because
+    Dwr Cymru does serve part of the English border.
+
+    A company whose outfalls reach no beach is absent from the result, which
+    coversHere() reads as "everywhere": unchanged from today, and the safe
+    direction for a question this cannot answer.
+    """
+    out = {}
+    country_of = {s["id"]: s.get("country") for s in (sites or [])}
+    for sid, rows in (nearby or {}).items():
+        country = country_of.get(sid)
+        if not country:
+            continue
+        for row in (rows or []):
+            co = (outfall_co or {}).get(row[0] if isinstance(row, (list, tuple)) else row)
+            if co:
+                out.setdefault(co, set()).add(country)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def brief_clip(text, cap):
     """Shorten a sentence for the brief without stopping mid-word.
 
@@ -2435,11 +2470,42 @@ def verdict(site, ctx):
         # and this site was saying "Take care". Somebody standing in front of
         # the sign was reading a milder word on their phone than the one on the
         # post beside them.
-        level = raise_to("advised")
-        why.append({"t": "advised", "s": "Annual classification",
-                    "text": "Rated Poor for %s, so advice against bathing is in "
-                            "place here for the season"
-                            % (site.get("clsYear") or "the last season")})
+        # AND THE SEASON IS THE WHOLE POINT OF IT.
+        #
+        # This fired every day of the year, so on 5 November all 39 Poor
+        # bathing waters were serving a red "Advice against bathing today" over
+        # the reason "advice against bathing is in place here FOR THE SEASON" —
+        # on a page whose own verdict card says the season ended on 30
+        # September, and whose explanation of this very rule says it sets the
+        # verdict "every day until the season closes". Three statements, one
+        # card, and the first two cannot both be true.
+        #
+        # Article 12 requires the advice during the bathing season. Outside it
+        # there is no designated season to post advice for, so the claim that
+        # advice is in place today is one this site cannot stand behind — and
+        # the site's whole position out of season is that nothing official
+        # stands behind a verdict, which is what every other page says.
+        #
+        # The rating itself does not go away, and must not: it is the single
+        # most useful thing known about a Poor beach in November. It moves from
+        # "advised" — a live warning, which is a claim about today — to "class",
+        # which is what the type is for: a standing fact about the record. The
+        # verdict falls back to whatever today's actual checks found, which out
+        # of season is "can't say", with the Poor grade and its meaning still
+        # printed on the page.
+        if in_season(country):
+            level = raise_to("advised")
+            why.append({"t": "advised", "s": "Annual classification",
+                        "text": "Rated Poor for %s, so advice against bathing is in "
+                                "place here for the season"
+                                % (site.get("clsYear") or "the last season")})
+        else:
+            why.append({"t": "class", "s": "Annual classification",
+                        "text": "Rated Poor for %s. Advice against bathing is "
+                                "posted here through the bathing season, which "
+                                "has ended — so there is no advice in force "
+                                "today either way"
+                                % (site.get("clsYear") or "the last season")})
 
     # ---- 5. season and coverage --------------------------------------------
     if not in_season(country):
@@ -3121,6 +3187,28 @@ def main():
     by_country_name = {(s["country"], norm(s["name"])): s["id"] for s in sites}
     by_eubwid = {s["id"].split(":", 1)[1].lower(): s["id"] for s in sites}
 
+    # WHICH COUNTRIES EACH WATER COMPANY'S OUTAGE IS NEWS IN.
+    #
+    # Feed(covers=...) exists so that a feed's failure is announced only where it
+    # changes something: the banner on a beach page tests it, and a Scottish
+    # forecast going dark is correctly silent on a Cornish page. Every forecast
+    # feed was given a covers list. Not one of the eleven water company feeds
+    # was, and coversHere() treats a missing list as "everywhere".
+    #
+    # So when Southern Water stopped publishing on 4 November, every page on the
+    # site carried a banner about it — including all 240 Irish, 33 Northern
+    # Irish, 90 Scottish and 114 Welsh beach pages, about an English company
+    # with no monitored outfall anywhere near any of them, on pages that say in
+    # their own body copy that no overflow data is published for them at all.
+    #
+    # Computed, not typed: nearby.json says which outfalls sit near each bathing
+    # water and outfalls.json says who owns each one, so a company covers the
+    # countries of the beaches its own outfalls are actually near. A company
+    # whose outfalls reach no beach gets an empty list rather than a guess,
+    # which coversHere() reads as "everywhere" — the same as today, and the safe
+    # direction for a case this cannot answer.
+    co_countries = company_coverage(sites, nearby, outfall_co)
+
     feeds, spills = {}, {}
 
     def run(name, fn, *a, **kw):
@@ -3134,21 +3222,24 @@ def main():
 
     print("Storm overflows")
     for company, url in S.EDM_FEEDS.items():
-        got = run(company, lambda f, c=company, u=url: spills_common(c, u, f))
+        got = run(company, lambda f, c=company, u=url: spills_common(c, u, f),
+                  covers=co_countries.get(company))
         if got:
             merge_spills(spills, got, feeds[company])
             print("    %-26s %5d outfalls, %d discharging, %d offline"
                   % (company, feeds[company].count, feeds[company].spilling,
                      feeds[company].offline))
 
-    got = run("Southern Water", spills_southern)
+    got = run("Southern Water", spills_southern,
+              covers=co_countries.get("Southern Water"))
     if got:
         merge_spills(spills, got, feeds["Southern Water"])
         print("    %-26s %5d outfalls, %d discharging, %d unverified"
               % ("Southern Water", feeds["Southern Water"].count,
                  feeds["Southern Water"].spilling, feeds["Southern Water"].offline))
 
-    wales = run("Welsh Water", spills_wales)
+    wales = run("Welsh Water", spills_wales,
+                covers=co_countries.get("Welsh Water"))
     dcww_links = {}
     if wales:
         got, dcww_links = wales
@@ -3156,7 +3247,8 @@ def main():
         print("    %-26s %5d outfalls, %d discharging"
               % ("Welsh Water", feeds["Welsh Water"].count, feeds["Welsh Water"].spilling))
 
-    got = run("Scottish Water", spills_scotland)
+    got = run("Scottish Water", spills_scotland,
+              covers=co_countries.get("Scottish Water"))
     if got:
         merge_spills(spills, got, feeds["Scottish Water"])
         print("    %-26s %5d outfalls, %d discharging, %d no data"

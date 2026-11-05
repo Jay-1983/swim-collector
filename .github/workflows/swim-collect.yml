@@ -97,6 +97,8 @@ jobs:
           python3 tests/test_prf_pending.py
           python3 tests/test_week_cells.py
           python3 tests/test_brief_clip.py
+          python3 tests/test_feed_coverage.py
+          python3 tests/test_poor_season.py
 
       - name: Install the push library
         run: python -m pip install --quiet "pywebpush==2.0.3"
