@@ -3522,6 +3522,12 @@ def main():
     # alerts feed. One line per bathing water instead of the whole verdict with
     # its reasons, checks, gaps, rainfall and outfall list.
     brief_sites, alerts = {}, []
+    # The out-of-season sentence, once per country rather than once per beach.
+    # Filled in the site loop below and joined on by functions/_middleware.js.
+    # NOT "offseason": that key is already taken in this payload by the list of
+    # slugs the alerts feed reads, and quietly reusing it would have replaced a
+    # list with a map under a consumer that iterates it.
+    season_note = {}
     prev_spells = previous_alert_spells()
     by_id = {s["id"]: s for s in sites}
     for sid, rec in out.items():
@@ -3621,11 +3627,54 @@ def main():
         # Only when there is no reason, and only the first gap, because this
         # payload is read by the edge on every page view of the whole site and
         # gaps are already sorted most-urgent-first.
+        # AND THE 489 BEACHES THAT DO HAVE A REASON STILL NEED THE SEASON SAID.
+        #
+        # "Only when there is no reason" left every beach carrying a live
+        # caution, advice or warning with no statement of the season at all in
+        # its served HTML — 63 English pages and 80 site-wide on 5 November.
+        # Those are the pages where it matters most: a red "Advice against
+        # bathing today" with no indication that official sampling stopped five
+        # weeks ago reads as today's measurement.
+        #
+        # Not by repeating the sentence into 489 rows. It is identical for every
+        # beach in a country, so it goes in the payload once per country, under
+        # "offseason", and the edge joins it on. Five sentences rather than
+        # another hundred kilobytes on a file read from KV on every page view.
         row = [rec["v"], brief_clip(why, 120)]
-        if not why:
-            g = (rec.get("gaps") or [])
-            if g:
-                row.append(brief_clip(g[0], 230))
+        g = (rec.get("gaps") or [])
+        if not why and g:
+            row.append(brief_clip(g[0], 230))
+        for _g in g:
+            if _g.startswith("Out of bathing season"):
+                season_note.setdefault(by_id[sid]["country"], brief_clip(_g, 230))
+                break
+        # AND WHEN A STANDING WARNING OPENED, so the edge can say how old it is.
+        #
+        # Nobody publishes a closing date for an open pollution incident, so one
+        # stays in the feed until the regulator takes it down. Three are open
+        # today at 73, 86 and 139 days, and all three served "Do not swim today"
+        # or "Advice against bathing today" with no date anywhere in the HTML —
+        # so a crawler and a reader without JavaScript met a warning four and a
+        # half months old as though it had been issued this morning. The page
+        # itself has said "Open since 20 June, which is 139 days… It may already
+        # be over" since the day the rule was written; only the served half was
+        # missing it.
+        #
+        # An ISO date rather than the sentence, because the age has to be
+        # computed when the page is SERVED and not when this ran: the snapshot
+        # is published every few minutes and the number of days is not.
+        #
+        # Index 3, with index 2 padded, so row[2] keeps meaning "the first gap"
+        # for every consumer that already reads it.
+        _since = ""
+        for _w in (rec.get("why") or []):
+            if _w.get("t") == "warning" and _w.get("at"):
+                _since = _w["at"]
+                break
+        if _since:
+            while len(row) < 3:
+                row.append("")
+            row.append(_since)
         brief_sites[sid] = row
         if rec["v"] in ("avoid", "advised"):
             # WHEN THIS SPELL STARTED, so the feed can say it once.
@@ -3684,6 +3733,7 @@ def main():
     brief_body = json.dumps({"at": iso(NOW), "sites": brief_sites,
                              "alerts": alerts, "unknown": unknown_slugs,
                              "offseason": offseason_slugs,
+                             "seasonNote": season_note,
                              "unread": unread_count},
                             separators=(",", ":"), ensure_ascii=False)
     print("    %-32s %4d sites, %d under a warning (%.0f KB)"
