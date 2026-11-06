@@ -92,20 +92,67 @@ def main():
     merged.sort(key=lambda r: (r.get("country") or "", r.get("river") or "",
                                r.get("town") or "", r["id"]))
     doc["rivers"] = merged
+    # FOUR SOURCES, NOT THREE, AND THE RANGES ARE NOT WHAT THIS SAID.
+    #
+    # Wales was added on 11 October and neither this note nor `sources` was
+    # touched, so the register documented three feeds and announced "the three"
+    # while carrying 219 nrw rows — and it is the register's own description of
+    # itself, published at /swim/rivers.json for anybody reusing the data.
+    #
+    # The ranges were wrong as well as incomplete. low/high is the interquartile
+    # range for WALES, which this site computes because Natural Resources Wales
+    # publishes no range at all; Ireland's comes from waterlevel.ie's exceedance
+    # percentiles, which run downwards. Saying the interquartile range was the
+    # Irish one got both nations wrong in the same sentence.
     doc["note"] = (
-        "Gauged river reaches with a published range to judge today's reading "
-        "against. src says which feed each row belongs to: ea = Environment "
-        "Agency (England), sepa = SEPA (Scotland), opw = waterlevel.ie "
-        "(Republic of Ireland). The three do not publish the same quantity — "
-        "low/high is a typical band for England and the interquartile range for "
-        "Ireland, while lowM/highM is a band per calendar month for Scotland, "
-        "and Irish levels are absolute heights above Malin Head datum rather "
-        "than a stage above a local zero.")
+        "Gauged river reaches with a range to judge today's reading against. "
+        "src says which feed each row belongs to: ea = Environment Agency "
+        "(England), sepa = SEPA (Scotland), nrw = Natural Resources Wales, "
+        "opw = waterlevel.ie (Republic of Ireland). The four do not publish the "
+        "same quantity. low/high is the Agency's own typical band in England; "
+        "in Wales it is the 25th to 75th percentile of twelve months of history, "
+        "computed here because Natural Resources Wales publishes no range, and "
+        "it carries no seasonal meaning; in Ireland it is derived from "
+        "waterlevel.ie's exceedance percentiles, which run downwards, so P05 is "
+        "a high level and P95 a low one. Scotland has no low/high at all and "
+        "uses lowM/highM, a band per calendar month. Irish levels are absolute "
+        "heights above Malin Head datum rather than a stage above a local zero, "
+        "so no level here is comparable with a level at another gauge — "
+        "only with the range published for that gauge.")
     doc["sources"] = {
         "ea": "https://environment.data.gov.uk/flood-monitoring",
         "sepa": "https://timeseries.sepa.org.uk/",
+        "nrw": "https://rivers-and-seas.naturalresources.wales/",
         "opw": "https://waterlevel.ie/",
     }
+    # THE NOTE DESCRIBES THE FILE, SO IT HAS TO KEEP UP WITH IT.
+    #
+    # Wales was merged in and the note kept saying "the three" for three weeks,
+    # on a file published at /swim/rivers.json as the register's own account of
+    # itself. The failure was silent because nothing compares the prose with the
+    # rows. This does: every src actually present must appear in `sources` and
+    # be named in the note, and the note must not claim a count that is wrong.
+    present = sorted({r.get("src") for r in merged if r.get("src")})
+    missing_src = [s for s in present if s not in doc["sources"]]
+    unnamed = [s for s in present if ("%s = " % s) not in doc["note"]]
+    counts = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+    wrong_count = [w for n, w in counts.items()
+                   if n != len(present) and ("The %s do not" % w) in doc["note"]]
+    problems = []
+    if missing_src:
+        problems.append("no sources entry for %s" % ", ".join(missing_src))
+    if unnamed:
+        problems.append("the note does not name %s" % ", ".join(unnamed))
+    if wrong_count:
+        problems.append("the note says \"The %s\" for %d feeds"
+                        % (wrong_count[0], len(present)))
+    if problems:
+        raise SystemExit(
+            "REFUSING TO WRITE rivers.json: its own note no longer describes "
+            "it.\n  %s\n  feeds present: %s\nThis file is published for other "
+            "people to reuse; a note that documents three of four sources is "
+            "worse than none." % ("\n  ".join(problems), ", ".join(present)))
+
     doc["built"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     io.open(path, "w", encoding="utf-8").write(
         json.dumps(doc, indent=1, sort_keys=True) + "\n")

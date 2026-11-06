@@ -509,6 +509,26 @@ def parse_iso(v, assume_local=False):
     return d.replace(tzinfo=timezone.utc)
 
 
+# The values a regulator's export puts where a name should be. Lower-cased and
+# stripped before matching, so "#N/A " and "#n/a" are one entry.
+PLACEHOLDER_NAMES = frozenset((
+    "#n/a", "n/a", "na", "#ref!", "#value!", "#name?", "#null!", "#div/0!",
+    "null", "none", "nil", "unknown", "unnamed", "tbc", "tba", "-", "--",
+    "not known", "not applicable", "no data",
+))
+
+
+def is_placeholder_name(value):
+    """Is this a name, or a cell that failed to fill in?
+
+    Three outfalls in the register give their receiving water as "#n/a" and one
+    as "Unknown", and both read to a visitor as the name of the water the pipe
+    discharges into — on a site whose whole purpose is telling somebody what is
+    going into the water they are standing in.
+    """
+    return str(value or "").strip().lower() in PLACEHOLDER_NAMES
+
+
 def company_coverage(sites, nearby, outfall_co):
     """Which countries each water company's outfalls actually reach.
 
@@ -3179,7 +3199,20 @@ def main():
     nearby = load_static("nearby.json")
     outfalls = load_static("outfalls.json")
     outfall_co = {k: v[2] for k, v in outfalls.items()}
-    outfall_name = {k: v[3] for k, v in outfalls.items() if v[3]}
+    # A SPREADSHEET ERROR IS NOT THE NAME OF A RIVER.
+    #
+    # `if v[3]` only drops an empty name, and "#n/a" is a perfectly truthy
+    # string, so three outfalls were published to readers with "#n/a" as their
+    # receiving water — on two beach pages and as two markers on /map/. One more
+    # carries the literal "Unknown". The caller already falls back to the water
+    # company's name when there is no receiving water, which is the honest
+    # answer; these rows just never reached it.
+    #
+    # Matched on the value, not the row, so a future export that invents a new
+    # error string is caught by the same list rather than by somebody noticing
+    # it on a page.
+    outfall_name = {k: v[3] for k, v in outfalls.items()
+                    if v[3] and not is_placeholder_name(v[3])}
     outfall_pos = {k: [v[0], v[1]] for k, v in outfalls.items()}
     # Keyed by country as well as name: "Sandycove" and "Silver Strand" exist in
     # more than one country, and a bare name map hands one country's reading to
