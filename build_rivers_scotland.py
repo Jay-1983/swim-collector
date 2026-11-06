@@ -241,15 +241,35 @@ def main():
         # top end is floods. A band drawn between them is so wide that
         # nothing is ever high, while the page goes on calling it the usual
         # range.
+        # CAPPED AT WHAT THE GAUGE HAS ACTUALLY RECORDED FOR THE MONTH.
+        #
+        # mean + (mean - min) is a CONSTRUCTED top end, not a published one, and
+        # on a gauge whose monthly minimum sits a long way below its mean it
+        # lands above anything the gauge has ever read. Two of the 358 are in
+        # that state for November: Avon Water at Avonbank reaches 2.096 against
+        # a record of 1.701, and Loch Maree 2.930 against 2.802.
+        #
+        # The page then prints a usual range whose top is unreachable, and the
+        # whole top band goes with it: band 1.0 is "Running high", so a gauge
+        # that cannot reach the top of its own range can never say the one thing
+        # a reader checks a river for. Silently, and on a rising river.
+        #
+        # mmax is the month's own recorded maximum, so capping there keeps the
+        # symmetric band where it is sensible and stops it claiming a level
+        # nothing has measured. It cannot invert the band: mmax is at least the
+        # mean, which is already above the minimum the bottom end uses.
         lowM, highM = [], []
         for i in range(12):
-            me, mn = mean[i], mmin[i]
+            me, mn, mx = mean[i], mmin[i], mmax[i]
             if me is None or mn is None or me <= mn:
                 lowM.append(None)
                 highM.append(None)
                 continue
+            top = me + (me - mn)
+            if mx is not None and top > mx:
+                top = mx
             lowM.append(round(mn, 3))
-            highM.append(round(me + (me - mn), 3))
+            highM.append(round(top, 3))
         out.append({
             "id": "R:S" + str(sn),
             # THE SOURCE, SAID OUTRIGHT, because neither the id nor the

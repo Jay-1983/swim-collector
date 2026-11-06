@@ -283,6 +283,28 @@ def main():
         if low is None or high is None or high <= low:
             drop("no usable range in the year")
             continue
+        # A BAND HAS TO BE WIDE ENOUGH TO TELL HIGH FROM NORMAL.
+        #
+        # high <= low catches a band of zero and nothing else, so the Lliw at
+        # Pont-y-Cob was kept with an interquartile range of ONE MILLIMETRE —
+        # 3.189 to 3.190 — on a gauge whose record runs from 3.183 to 5.265. The
+        # middle half of its year is a single value, which is a sensor sitting
+        # still rather than a river, and the page printed "a usual range here of
+        # 3.19 to 3.19m" above a red "Running high" that any movement at all
+        # earns, because band 1.0 is one millimetre away.
+        #
+        # 5cm, and the figure is measured rather than picked: across the 219
+        # Welsh gauges the median band is 0.283 m and the 5th percentile 0.103 m.
+        # The narrowest is this gauge's 0.001 m and the next narrowest is
+        # 0.060 m — a sixtyfold gap with nothing in it — so this floor excludes
+        # exactly the one degenerate gauge and the nearest real one has room to
+        # spare. A gauge whose usual range is under 5cm cannot distinguish a
+        # normal river from a high one, which is the only thing the page uses it
+        # for, so it gets no page rather than a verdict nothing supports.
+        if (high - low) < 0.05:
+            drop("an interquartile range under 5cm, which cannot tell high "
+                 "from normal")
+            continue
         out.append({
             "id": "R:W%d" % w["pid"],
             # Said outright, like the others: neither the id nor the country can
