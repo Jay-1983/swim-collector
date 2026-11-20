@@ -196,7 +196,7 @@ def in_season(country, when=None):
 class Feed:
     """One upstream source and whether it is actually working right now."""
 
-    def __init__(self, name, covers=None, escalates=True):
+    def __init__(self, name, covers=None, escalates=True, seasonal=False):
         self.name = name
         self.covers = covers or []      # which countries go blind if this fails
         # Whether this feed failing actually changes a verdict. The page promises
@@ -220,6 +220,12 @@ class Feed:
         # only the reason differs, and the reason is the whole value of saying
         # anything.
         self.pending = None
+        # WHETHER THIS FEED HAS A SEASON AT ALL, which is not the same question
+        # as which countries it covers. Only the feeds that genuinely stop —
+        # the three daily forecasts, the lab samples and DAERA's sampling — may
+        # publish an off-season block. Everything else runs all year and a
+        # silence from it is a fault.
+        self.seasonal = bool(seasonal)
         # How old the relayed copy was, when `pending` is "stale copy".
         self.pending_hours = None
         self.at = None                  # freshest timestamp inside the data
@@ -229,6 +235,12 @@ class Feed:
 
     def offseason(self, when=None):
         """The end of the season is not a fault, and must not be reported as one.
+
+        AND A FEED WITH NO SEASON CANNOT BE OUT OF ONE. `seasonal` is a separate
+        flag from `covers` because the two questions are different: covers says
+        WHERE a failure is news, seasonal says whether the feed stops for the
+        winter at all. This method used to read `covers` for both, so any feed
+        given a covers list inherited a season it does not have.
 
         SEPA stops issuing daily predictions on 15 September and starts again
         on 1 June; the Environment Agency and Natural Resources Wales stop on
@@ -243,7 +255,7 @@ class Feed:
         season: the EA forecast covers England and Wales, and one of them being
         finished is not the same thing as the feed being finished.
         """
-        if not self.covers:
+        if not self.seasonal or not self.covers:
             return None
         if any(in_season(c, when) for c in self.covers):
             return None
@@ -3245,7 +3257,9 @@ def main():
     feeds, spills = {}, {}
 
     def run(name, fn, *a, **kw):
-        f = feeds[name] = Feed(name, kw.get("covers"), kw.get("escalates", True))
+        f = feeds[name] = Feed(name, kw.get("covers"),
+                               kw.get("escalates", True),
+                               kw.get("seasonal", False))
         try:
             return fn(f, *a)
         except Exception as e:                      # noqa: BLE001 - a dead feed must not kill the run
@@ -3316,15 +3330,16 @@ def main():
         print("    Welsh Water's own beach mapping added %d links" % linked)
 
     print("Official warnings")
-    warnings = run("EA pollution risk forecast", prf, covers=["England"]) or {}
+    warnings = run("EA pollution risk forecast", prf, covers=["England"], seasonal=True) or {}
     warnings.update(run("NRW pollution risk forecast",
-                        lambda f: prf(f, S.NRW_PRF, "W:"), covers=["Wales"]) or {})
+                        lambda f: prf(f, S.NRW_PRF, "W:"), covers=["Wales"],
+                        seasonal=True) or {})
     incidents = run("EA incidents and suspensions", ea_incidents, covers=["England"]) or {}
     sepa = run("SEPA daily prediction", predictions_scotland, by_country_name,
-               covers=["Scotland"]) or {}
+               covers=["Scotland"], seasonal=True) or {}
     roi = run("Ireland restrictions", restrictions_roi, covers=["Ireland"]) or {}
     ni = run("NI sample quality", quality_ni, by_country_name,
-             covers=["Northern Ireland"]) or {}
+             covers=["Northern Ireland"], seasonal=True) or {}
     southern = run("Southern Water beaches", southern_beaches, by_eubwid) or {}
     for k in ("EA pollution risk forecast", "NRW pollution risk forecast",
               "EA incidents and suspensions", "SEPA daily prediction",
@@ -3471,7 +3486,8 @@ def main():
     # needs no second lookup and the two can never describe different places.
     samples = run("Bathing water samples",
                   lambda f: latest_samples(sites, f),
-                  covers=["England", "Wales"], escalates=False) or {}
+                  covers=["England", "Wales"], escalates=False,
+                  seasonal=True) or {}
     # CARRIED FORWARD, so coverage fills in rather than sawing up and down.
     #
     # Only two weeks of samples are warmed in the larder, and sites are not all
